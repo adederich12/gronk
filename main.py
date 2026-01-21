@@ -8,11 +8,6 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import spacy
 from spacy.matcher import Matcher
-try:
-    import torch
-except ImportError:
-    torch = None
-from transformers import pipeline
 import re
 from typing import Optional
 from datetime import timezone, datetime, timedelta
@@ -21,57 +16,62 @@ import sqlite3
 import json
 import aiohttp
 import tempfile
+# xAI SDK for all API interactions
+from xai_sdk import AsyncClient as XAIAsyncClient
+from xai_sdk.chat import user as xai_user, file as xai_file, system as xai_system, assistant as xai_assistant, text as xai_text, image as xai_image
+from xai_sdk.tools import web_search as xai_web_search, x_search as xai_x_search, code_execution as xai_code_execution
+from xai_sdk.search import SearchParameters
 
 bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
 
-@bot.command(name='imagine', help='Generate an image from a prompt using AI')
-async def imagine(ctx, *, prompt: str):
+async def generate_image(message, prompt: str):
     """
     Generate an image from a text prompt using Grok image generation API.
+    Called via natural language detection (e.g., "generate an image of...")
     """
     try:
         XAI_KEY = os.getenv('XAI_API_KEY')
         GROK_IMAGE_MODEL = os.getenv('GROK_IMAGE_MODEL', 'grok-2-image-latest')
         GROK_IMAGE_OUTPUT_COST = float(os.getenv('GROK_IMAGE_OUTPUT_COST', '0.50'))  # $/image default, update as needed
         if not XAI_KEY:
-            await ctx.reply("❌ XAI_API_KEY not set in environment.")
+            await message.reply("❌ XAI_API_KEY not set in environment.")
             return
-        await ctx.trigger_typing()
-        # Call Grok image generation API
-        url = "https://api.x.ai/v1/images/generations"
-        headers = {"Authorization": f"Bearer {XAI_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": GROK_IMAGE_MODEL,
-            "prompt": prompt,
-            "response_format": "url"
-        }
-        image_url = None
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    # Per docs, always use data[0].url for the first image
-                    if isinstance(data, dict) and 'data' in data and isinstance(data['data'], list) and data['data']:
-                        image_url = data['data'][0].get('url')
+        async with message.channel.typing():
+            # Call Grok image generation API
+            url = "https://api.x.ai/v1/images/generations"
+            headers = {"Authorization": f"Bearer {XAI_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": GROK_IMAGE_MODEL,
+                "prompt": prompt,
+                "response_format": "url"
+            }
+            image_url = None
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        # Per docs, always use data[0].url for the first image
+                        if isinstance(data, dict) and 'data' in data and isinstance(data['data'], list) and data['data']:
+                            image_url = data['data'][0].get('url')
+                        else:
+                            image_url = None
+                        if not image_url:
+                            await message.reply("❌ No image URL returned by Grok.")
+                            return
                     else:
-                        image_url = None
-                    if not image_url:
-                        await ctx.reply("❌ No image URL returned by Grok.")
+                        err = await resp.text()
+                        await message.reply(f"❌ Grok image API error: {resp.status} {err}")
                         return
-                else:
-                    err = await resp.text()
-                    await ctx.reply(f"❌ Grok image API error: {resp.status} {err}")
-                    return
         # Pricing info (update as needed)
         usage_text = f"💵 ${GROK_IMAGE_OUTPUT_COST:.2f} (est.)"
         embed = discord.Embed(
             title="🖼️ Grok AI Generated Image",
             description=f'**Prompt:** {prompt}',
             color=discord.Color.purple(),
-            timestamp=ctx.message.created_at
+            timestamp=message.created_at
         )
         embed.set_image(url=image_url)
-        embed.set_footer(text=f"Requested by {ctx.author.display_name} • {usage_text}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+        embed.set_footer(text=f"Requested by {message.author.display_name} • {usage_text}", icon_url=message.author.avatar.url if message.author.avatar else None)
 
         class MoreVersionsView(ui.View):
             def __init__(self, prompt):
@@ -130,19 +130,12 @@ async def imagine(ctx, *, prompt: str):
                     await interaction.followup.send(f"❌ Error generating image: {e}", ephemeral=True)
 
         view = MoreVersionsView(prompt)
-        await ctx.reply(embed=embed, view=view)
+        await message.reply(embed=embed, view=view)
     except Exception as e:
-        await ctx.reply(f"❌ Error generating image: {e}")
+        await message.reply(f"❌ Error generating image: {e}")
 
-import spacy
-from spacy.matcher import Matcher
-try:
-    import torch
-except ImportError:
-    torch = None
-from transformers import pipeline
-
-# Load spaCy model (en_core_web_sm is small, replace with larger model if needed)
+# Load spaCy model for lightweight NLP (entity/topic extraction only)
+# Note: We use pattern-based intent detection instead of heavy ML models for performance
 try:
     nlp_spacy = spacy.load('en_core_web_sm')
 except OSError:
@@ -150,49 +143,56 @@ except OSError:
     subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
     nlp_spacy = spacy.load('en_core_web_sm')
 
-# Optional: Hugging Face intent classification pipeline (zero-shot)
-intent_classifier = None
-try:
-    intent_classifier = pipeline('zero-shot-classification', model='facebook/bart-large-mnli')
-except Exception as e:
-    # Use print here in case logger is not yet defined
-    print(f'Intent classifier not loaded: {e}')
+# Intent patterns for lightweight detection (no ML models needed)
+INTENT_PATTERNS = {
+    'image_generation': [
+        r'\b(generate|create|make|draw|paint|sketch|render|illustrate|visualize)\b.*\b(image|picture|art|artwork|illustration|visual)\b',
+        r'\b(image|picture|art|artwork|illustration)\b.*\b(of|for|with|showing)\b',
+        r'\bshow me (an? )?(image|picture|art)\b',
+        r'\b(grok|bot),?\s*(make|create|generate|draw)\b',
+    ],
+    'discord_history': [
+        r'\b(who|what|how many)\b.*\b(talked|said|mentioned|posted|discussed)\b',
+        r'\b(summarize|summary|overview)\b.*\b(chat|discord|server|channel|conversation)\b',
+        r'\bin (this|the) (server|channel|discord|chat)\b',
+        r'\b(we|our|us)\b.*\b(discuss|talk|mention|chat)\b',
+    ],
+    'general_query': [
+        r'\b(what is|who is|how does|why does|when did|where is)\b',
+        r'\b(explain|tell me about|describe)\b',
+    ]
+}
+
+def detect_intent_pattern(text):
+    """
+    Lightweight pattern-based intent detection.
+    Returns the detected intent or None.
+    """
+    text_lower = text.lower()
+    for intent, patterns in INTENT_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, text_lower):
+                return intent
+    return None
 
 def advanced_nlp_parse(text):
     """
-    Use spaCy and transformers to extract entities, topics, and intent from user queries.
-    Returns dict with entities, topics, and intent (if available).
+    Lightweight NLP using spaCy for entity/topic extraction and regex for intent.
+    Returns dict with entities, topics, and intent.
+    Memory-efficient: No heavy ML models loaded.
     """
     doc = nlp_spacy(text)
     entities = [(ent.text, ent.label_) for ent in doc.ents]
     # Extract noun chunks as potential topics
     topics = [chunk.text for chunk in doc.noun_chunks]
-
-    # Use Hugging Face zero-shot for intent if available
-    intent = None
-    if intent_classifier:
-        candidate_labels = [
-            "discord_history_query",
-            "general_knowledge_query",
-            "user_search",
-            "topic_summary",
-            "sentiment_analysis",
-            "other"
-        ]
-        result = intent_classifier(text, candidate_labels)
-        if result and 'labels' in result and result['labels']:
-            intent = result['labels'][0]
-
+    # Use lightweight pattern-based intent detection
+    intent = detect_intent_pattern(text)
+    
     return {
         'entities': entities,
         'topics': topics,
         'intent': intent
     }
-import re
-from typing import Optional
-from datetime import timezone, datetime, timedelta
-import pytz
-import sqlite3
 import json
 import aiohttp
 import tempfile
@@ -234,9 +234,12 @@ TIMEZONE = pytz.timezone(os.getenv('TIMEZONE', 'America/Chicago'))
 # Model configuration (with defaults)
 GROK_TEXT_MODEL = os.getenv('GROK_TEXT_MODEL', 'grok-4-fast')
 GROK_VISION_MODEL = os.getenv('GROK_VISION_MODEL', 'grok-2-vision-1212')
+GROK_DOCUMENT_MODEL = os.getenv('GROK_DOCUMENT_MODEL', 'grok-4-fast')  # Must be agentic-capable for document search
 
 # Search configuration (with defaults)
 ENABLE_WEB_SEARCH = os.getenv('ENABLE_WEB_SEARCH', 'true').lower() == 'true'
+ENABLE_X_SEARCH = os.getenv('ENABLE_X_SEARCH', 'false').lower() == 'true'  # X/Twitter search (disabled by default)
+ENABLE_CODE_EXECUTION = os.getenv('ENABLE_CODE_EXECUTION', 'false').lower() == 'true'  # Code execution tool (disabled by default)
 MAX_SEARCH_RESULTS = int(os.getenv('MAX_SEARCH_RESULTS', '3'))
 MAX_KEYWORD_SCAN = int(os.getenv('MAX_KEYWORD_SCAN', '10000'))
 ENABLE_NL_HISTORY_SEARCH = os.getenv('ENABLE_NL_HISTORY_SEARCH', 'true').lower() == 'true'
@@ -249,11 +252,148 @@ GROK_TEXT_OUTPUT_COST = float(os.getenv('GROK_TEXT_OUTPUT_COST', '0.50'))
 GROK_TEXT_CACHED_COST = float(os.getenv('GROK_TEXT_CACHED_COST', '0.05'))
 GROK_VISION_INPUT_COST = float(os.getenv('GROK_VISION_INPUT_COST', '2.00'))
 GROK_VISION_OUTPUT_COST = float(os.getenv('GROK_VISION_OUTPUT_COST', '10.00'))
-GROK_SEARCH_COST = float(os.getenv('GROK_SEARCH_COST', '25.00'))
+# Tool pricing (per 1,000 invocations) - new model as of 2025
+GROK_TOOL_COST = float(os.getenv('GROK_TOOL_COST', '5.00'))  # $5/1000 calls for web_search, x_search, code_execution
 
+# OpenAI-compatible client (still used for some operations like vision)
 client = OpenAI(api_key=XAI_KEY, base_url="https://api.x.ai/v1")
 
-bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
+# Global xAI SDK async client (initialized lazily)
+_xai_client = None
+
+def get_xai_client():
+    """Get or create the global xAI async client."""
+    global _xai_client
+    if _xai_client is None:
+        _xai_client = XAIAsyncClient()
+    return _xai_client
+
+def build_sdk_tools():
+    """Build list of tools for SDK chat based on configuration."""
+    tools = []
+    if ENABLE_WEB_SEARCH:
+        tools.append(xai_web_search())
+    if ENABLE_X_SEARCH:
+        tools.append(xai_x_search())
+    if ENABLE_CODE_EXECUTION:
+        tools.append(xai_code_execution())
+    return tools if tools else None
+
+async def sdk_chat_request(model: str, system_prompt: str, user_prompt: str, 
+                           conversation_history: list = None, include_search: bool = True,
+                           max_search_results: int = None,
+                           previous_response_id: str = None) -> tuple:
+    """
+    Make a chat request using the xAI SDK Chat Responses API.
+    
+    Args:
+        model: The model to use
+        system_prompt: System prompt for the conversation
+        user_prompt: The user's message
+        conversation_history: Optional list of previous messages (used if no previous_response_id)
+        include_search: Whether to enable search tools
+        max_search_results: Maximum number of search results
+        previous_response_id: xAI response ID to continue a conversation (uses server-side history)
+    
+    Returns: (response_content: str, usage_dict: dict, citations: list, response_id: str)
+    """
+    xai_client = get_xai_client()
+    
+    # Build tools
+    tools = build_sdk_tools() if include_search else None
+    
+    # Build search parameters
+    search_params = None
+    if include_search and ENABLE_WEB_SEARCH:
+        search_params = SearchParameters(
+            mode="auto",
+            max_search_results=max_search_results or MAX_SEARCH_RESULTS,
+            return_citations=True
+        )
+    
+    # Create chat - use previous_response_id if available for conversation chaining
+    if previous_response_id:
+        # Continue from previous conversation (xAI stores the history)
+        logger.info(f'Continuing conversation from xAI response ID: {previous_response_id}')
+        chat = xai_client.chat.create(
+            model=model,
+            previous_response_id=previous_response_id,
+            store_messages=True,
+            tools=tools,
+            search_parameters=search_params,
+            include=["inline_citations"]  # Get citations embedded in response text
+        )
+    else:
+        # New conversation - build messages from scratch
+        messages = [xai_system(system_prompt)]
+        
+        # Add conversation history if provided (fallback when no response ID)
+        if conversation_history:
+            for msg in conversation_history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "user":
+                    messages.append(xai_user(content))
+                elif role == "assistant":
+                    messages.append(xai_assistant(content))
+        
+        chat = xai_client.chat.create(
+            model=model,
+            messages=messages,
+            store_messages=True,
+            tools=tools,
+            search_parameters=search_params,
+            include=["inline_citations"]  # Get citations embedded in response text
+        )
+    
+    # Add user message
+    chat.append(xai_user(user_prompt))
+    
+    # Get response
+    response = await chat.sample()
+    
+    # Extract data
+    content = response.content if response else ""
+    citations = response.citations if response and hasattr(response, 'citations') else []
+    response_id = response.id if response and hasattr(response, 'id') else None
+    
+    # Note: With inline_citations enabled, URLs are already properly formatted as [[N]](url)
+    # Skip URL post-processing to avoid double-wrapping like [[1]]([post](url))
+    
+    # Debug: log citation info
+    if citations:
+        logger.info(f'Got {len(citations)} citations (sources examined)')
+    
+    # Log actual tool invocations (this is what costs $5/1000)
+    if response and hasattr(response, 'tool_calls') and response.tool_calls:
+        logger.info(f'Tool invocations: {len(response.tool_calls)} calls')
+        for tc in response.tool_calls:
+            if hasattr(tc, 'function'):
+                logger.info(f'  - {tc.function.name}')
+    if response and hasattr(response, 'server_side_tool_usage') and response.server_side_tool_usage:
+        logger.info(f'Server-side tool usage: {response.server_side_tool_usage}')
+    
+    if response_id:
+        logger.info(f'Got xAI response ID: {response_id}')
+    
+    # Build usage dict
+    usage = {}
+    tool_invocations = 0
+    
+    # Count tool invocations from response.tool_calls (the actual calls made)
+    if response and hasattr(response, 'tool_calls') and response.tool_calls:
+        tool_invocations = len(response.tool_calls)
+    
+    if response and hasattr(response, 'usage') and response.usage:
+        usage = {
+            'prompt_tokens': getattr(response.usage, 'prompt_tokens', 0) or (response.usage.total_tokens // 2),
+            'completion_tokens': getattr(response.usage, 'completion_tokens', 0) or (response.usage.total_tokens // 2),
+            'total_tokens': response.usage.total_tokens if hasattr(response.usage, 'total_tokens') else 0,
+            'tool_invocations': tool_invocations,
+            'num_citations': len(citations) if citations else 0
+        }
+    
+    return content, usage, citations, response_id
 
 search_context = {}  # {channel_id: {user_id: {searched_user: User, messages: [...], query: str}}}
 
@@ -285,9 +425,17 @@ def init_conversation_db():
             user_query TEXT NOT NULL,
             bot_response TEXT NOT NULL,
             model_used TEXT NOT NULL,
+            xai_response_id TEXT,
             created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )
     ''')
+    
+    # Add xai_response_id column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute('ALTER TABLE conversations ADD COLUMN xai_response_id TEXT')
+        logger.info('Added xai_response_id column to conversations table')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     
     # Create index for faster lookups
     cursor.execute('''
@@ -302,7 +450,8 @@ def init_conversation_db():
     logger.info(f'Conversation database initialized at {DB_PATH}')
 
 def store_conversation(message_id: int, channel_id: int, author_id: int, 
-                       user_query: str, bot_response: str, model_used: str):
+                       user_query: str, bot_response: str, model_used: str,
+                       xai_response_id: str = None):
     """Store conversation in SQLite database"""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -311,13 +460,13 @@ def store_conversation(message_id: int, channel_id: int, author_id: int,
         now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
         cursor.execute('''
             INSERT OR REPLACE INTO conversations 
-            (message_id, channel_id, author_id, user_query, bot_response, model_used, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (message_id, channel_id, author_id, user_query, bot_response, model_used, now_iso))
+            (message_id, channel_id, author_id, user_query, bot_response, model_used, xai_response_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (message_id, channel_id, author_id, user_query, bot_response, model_used, xai_response_id, now_iso))
         
         conn.commit()
         conn.close()
-        logger.debug(f'Stored conversation for message {message_id}')
+        logger.debug(f'Stored conversation for message {message_id}' + (f' with xAI response ID {xai_response_id}' if xai_response_id else ''))
     except Exception as e:
         logger.error(f'Error storing conversation: {e}')
 
@@ -328,7 +477,7 @@ def get_conversation(message_id: int) -> Optional[dict]:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT author_id, user_query, bot_response, model_used, created_at
+            SELECT author_id, user_query, bot_response, model_used, created_at, xai_response_id
             FROM conversations
             WHERE message_id = ?
         ''', (message_id,))
@@ -342,7 +491,8 @@ def get_conversation(message_id: int) -> Optional[dict]:
                 'user_query': row[1],
                 'bot_response': row[2],
                 'model_used': row[3],
-                'created_at': row[4]
+                'created_at': row[4],
+                'xai_response_id': row[5]
             }
         return None
     except Exception as e:
@@ -434,509 +584,6 @@ async def on_ready():
     
     # Schedule periodic cleanup (every 6 hours)
     bot.loop.create_task(periodic_cleanup())
-
-@bot.command(name='search')
-async def search_history(ctx, *, query_text: str):
-    """Search message history in this channel
-    Usage: !search query text here (searches all messages)
-    Usage: !search @user query text here (searches specific user)
-    Usage: !search @user 2000 query (specify message limit)
-    Usage: !search keyword:Python what are discussions about Python (pre-filter by keyword)
-    Example: !search who mentioned Python
-    Example: !search @john tell me about his projects
-    Example: !search @john 5000 what are his opinions on AI
-    Example: !search keyword:bot summarize bot discussions
-    """
-    if not query_text:
-        await ctx.reply("❌ Please provide a search query. Usage: `!search query` or `!search @user query`")
-        return
-    
-    # Check if a user is mentioned
-    target_user = None
-    if ctx.message.mentions:
-        target_user = ctx.message.mentions[0]
-        # Remove user mention from query
-        query_text = query_text.replace(f'<@{target_user.id}>', '').replace(f'<@!{target_user.id}>', '').strip()
-    
-    # Parse optional limit, keyword filter, and query
-    limit = 1000
-    keyword_filter = None
-    query = query_text
-    
-    # Check for keyword filter
-    if query_text.startswith('keyword:'):
-        parts = query_text.split(None, 1)
-        keyword_filter = parts[0].replace('keyword:', '').lower()
-        query = parts[1] if len(parts) > 1 else ""
-        if not query:
-            await ctx.reply("❌ Please provide a search query after the keyword filter.")
-            return
-    
-    # Check if first word is a number (limit)
-    if query:
-        parts = query.split(None, 1)
-        if parts[0].isdigit():
-            limit = int(parts[0])
-            query = parts[1] if len(parts) > 1 else ""
-            if not query:
-                await ctx.reply("❌ Please provide a search query after the limit.")
-                return
-    
-    if target_user:
-        logger.info(f'Search command by {ctx.author} for user {target_user} with query: {query}, limit: {limit}, keyword: {keyword_filter}')
-    else:
-        logger.info(f'Search command by {ctx.author} for ALL users with query: {query}, limit: {limit}, keyword: {keyword_filter}')
-    
-    # Send a "searching" message
-    if keyword_filter:
-        # Keyword search scans entire history
-        if target_user:
-            searching_msg = await ctx.reply(f"🔍 Searching {target_user.mention}'s message history for keyword `{keyword_filter}`...")
-        else:
-            searching_msg = await ctx.reply(f"🔍 Searching channel history for keyword `{keyword_filter}`...")
-    else:
-        # Regular search with limit
-        if target_user:
-            searching_msg = await ctx.reply(f"🔍 Searching {target_user.mention}'s message history (last {limit} messages)...")
-        else:
-            searching_msg = await ctx.reply(f"🔍 Searching channel message history (last {limit} messages)...")
-    
-    try:
-        # Collect messages (history returns newest first)
-        collected_messages = []
-        messages_scanned = 0
-        last_update = 0
-        
-        # For keyword filtering, scan much more to find filtered results
-        # For general searches, only scan what we can send to Grok
-        if keyword_filter:
-            # Scan up to MAX_KEYWORD_SCAN messages for keyword searches
-            max_scan = MAX_KEYWORD_SCAN
-        else:
-            # For non-keyword searches, we'll send all results to Grok anyway
-            # So only scan up to MAX_MESSAGES_ANALYZED (no point scanning more)
-            max_scan = MAX_MESSAGES_ANALYZED
-        
-        # Pre-compute lowercase keyword for faster comparison
-        keyword_lower = keyword_filter.lower() if keyword_filter else None
-        
-        async for msg in ctx.channel.history(limit=max_scan):
-            # Skip the search command itself immediately
-            if msg.id == ctx.message.id:
-                continue
-            
-            messages_scanned += 1
-            
-            # Apply filters efficiently (short-circuit evaluation)
-            # Check user filter first (faster than string operations)
-            if target_user and msg.author != target_user:
-                continue
-            
-            # Check bot filter for non-targeted searches
-            if not target_user and msg.author.bot:
-                continue
-            
-            # Apply keyword filter last (most expensive operation)
-            if keyword_lower and keyword_lower not in msg.content.lower():
-                continue
-            
-            # Message passed all filters
-            collected_messages.append(msg)
-            
-            # Update progress message every 2000 messages scanned (even less frequent)
-            if messages_scanned - last_update >= 2000:
-                last_update = messages_scanned
-                try:
-                    if keyword_filter:
-                        progress_pct = int((messages_scanned / max_scan) * 100) if max_scan > 0 else 0
-                        if target_user:
-                            await searching_msg.edit(content=f"🔍 Searching {target_user.mention}'s message history for keyword `{keyword_filter}`... ({progress_pct}% - scanned {messages_scanned:,}, found {len(collected_messages):,})")
-                        else:
-                            await searching_msg.edit(content=f"🔍 Searching channel history for keyword `{keyword_filter}`... ({progress_pct}% - scanned {messages_scanned:,}, found {len(collected_messages):,})")
-                    else:
-                        if target_user:
-                            await searching_msg.edit(content=f"🔍 Searching {target_user.mention}'s message history... (scanned {messages_scanned:,}, found {len(collected_messages):,})")
-                        else:
-                            await searching_msg.edit(content=f"🔍 Searching channel message history... (scanned {messages_scanned:,}, found {len(collected_messages):,})")
-                except:
-                    pass  # Ignore errors updating status
-            
-            # For non-keyword searches, stop when we have enough
-            if not keyword_filter and len(collected_messages) >= limit:
-                break
-        
-        if not collected_messages:
-            if target_user:
-                await searching_msg.edit(content=f"❌ No messages found from {target_user.mention} in this channel.")
-            else:
-                await searching_msg.edit(content=f"❌ No messages found in this channel.")
-            return
-        
-        if target_user:
-            logger.info(f'Found {len(collected_messages)} messages from {target_user}' + (f' (filtered by "{keyword_filter}")' if keyword_filter else ''))
-        else:
-            logger.info(f'Found {len(collected_messages)} messages from all users' + (f' (filtered by "{keyword_filter}")' if keyword_filter else ''))
-        
-        # Store search context for follow-ups
-        if ctx.channel.id not in search_context:
-            search_context[ctx.channel.id] = {}
-        search_context[ctx.channel.id][ctx.author.id] = {
-            'searched_user': target_user,
-            'messages': collected_messages,
-            'last_query': query
-        }
-        
-        # Build context for Grok (configurable limit via MAX_MESSAGES_ANALYZED)
-        # Since collected_messages is in reverse chronological order (newest first),
-        # we take the first N messages (most recent) and then reverse them for chronological order
-        messages_to_analyze = min(len(collected_messages), MAX_MESSAGES_ANALYZED)
-        messages_for_context = collected_messages[:messages_to_analyze]
-        
-        if target_user:
-            context_parts = [f"Search query: {query}\n\nUser {target_user.name}'s recent messages (showing {messages_to_analyze} of {len(collected_messages)} found, from oldest to newest):\n"]
-        else:
-            context_parts = [f"Search query: {query}\n\nChannel messages (showing {messages_to_analyze} of {len(collected_messages)} found, from oldest to newest):\n"]
-        
-        # Create a mapping of message numbers to message objects for later citation linking
-        # Reverse to show chronological order (oldest to newest)
-        message_number_map = {}
-        for i, msg in enumerate(reversed(messages_for_context), 1):
-            # Convert UTC timestamp to configured timezone
-            timestamp_local = msg.created_at.astimezone(TIMEZONE)
-            tz_abbr = timestamp_local.strftime("%Z")  # Get timezone abbreviation (CST, CDT, etc.)
-            timestamp_str = timestamp_local.strftime(f"%Y-%m-%d %H:%M {tz_abbr}")
-            author_name = msg.author.name if not target_user else ""
-            content = msg.content[:300] + "..." if len(msg.content) > 300 else msg.content
-            message_number_map[i] = msg  # Store mapping for later
-            if target_user:
-                context_parts.append(f"[{i}] [{timestamp_str}] {content}")
-            else:
-                context_parts.append(f"[{i}] [{timestamp_str}] {author_name}: {content}")
-        
-        context_parts.append(f"\n\nBased on these messages, {query}")
-        context_parts.append("\n\nIMPORTANT CITATION GUIDELINES:")
-        context_parts.append("- Cite key messages that support your main points (aim for 3-6 total citations)")
-        context_parts.append("- Be selective - don't cite every message, but DO cite your evidence")
-        context_parts.append("- NEVER use ranges like [#5-#10] - only cite individual messages: [#5], [#7], [#10]")
-        context_parts.append("- Use EXACTLY this format: [#N] where N is the message number")
-        context_parts.append("- Examples: [#5] or [#12]. Multiple: [#3], [#7], and [#12]")
-        context_parts.append("- Do NOT add any extra text or context inside the brackets")
-        context_parts.append("\n\nNote: Custom Discord emojis appear as <:emoji_name:emoji_id>. When quoting messages with emojis, preserve this exact format.")
-        tz_name = TIMEZONE.zone  # e.g., "America/Chicago"
-        context_parts.append(f"\n\nNote: All timestamps are in {tz_name} timezone.")
-        full_prompt = "\n".join(context_parts)
-        
-        # Query Grok
-        async with ctx.channel.typing():
-            # Build request parameters
-            request_params = {
-                "model": GROK_TEXT_MODEL,
-                "messages": [{"role": "user", "content": full_prompt}]
-            }
-            
-            # Add search parameters if enabled
-            if ENABLE_WEB_SEARCH:
-                request_params["extra_body"] = {
-                    "search_parameters": {
-                        "mode": "auto",
-                        "max_search_results": MAX_SEARCH_RESULTS
-                    }
-                }
-            
-            completion = client.chat.completions.create(**request_params)
-            
-            response = completion.choices[0].message.content
-            
-            # Clean up malformed citations (e.g., #248(⁠post-election-year-hate-dome⁠) -> #248)
-            # First, remove channel names from citations
-            malformed_citation_pattern = r'#(\d+)\([^)]*\)'
-            response = re.sub(malformed_citation_pattern, r'#\1', response)
-            
-            # Now convert citations to bracketed format
-            # First handle ranges like #140-#141-#142 or #727-#1000 -> [#140-#141-#142]
-            # The pattern matches: #<num>-#<num> or #<num>-<num>-#<num> etc.
-            # Must not already be inside brackets
-            range_bare_pattern = r'(?<!\[)#(\d+(?:-#?\d+)+)(?!\])'
-            response = re.sub(range_bare_pattern, r'[#\1]', response)
-            
-            # Then handle individual citations #N -> [#N]
-            # Must not be: already in brackets, followed by dash (part of range), or followed by ]
-            bare_citation_pattern = r'(?<!\[)#(\d+)(?![\d\-\)\]])'
-            response = re.sub(bare_citation_pattern, r'[#\1]', response)
-            
-            # Parse citations from response and extract referenced message numbers
-            # Match both individual citations [#N] and ranges [#N-#M], [#N]-[#M], [#N-M]
-            citation_pattern = r'\[#(\d+)\]'
-            range_pattern = r'\[#(\d+)-#?(\d+)\]'  # Matches [#497-502], [#88-#90]
-            
-            # Find individual citations (but not those that are part of ranges)
-            cited_numbers = set()
-            for match in re.finditer(citation_pattern, response):
-                # Check if this is part of a range by looking at context
-                pos = match.start()
-                # Skip if preceded by a range pattern
-                if pos > 0 and response[pos-1:pos] in ['-', ']']:
-                    continue
-                cited_numbers.add(int(match.group(1)))
-            
-            # Find and expand ranges
-            for match in re.finditer(range_pattern, response):
-                start_num = int(match.group(1))
-                end_num = int(match.group(2))
-                # Add all numbers in the range
-                cited_numbers.update(range(start_num, end_num + 1))
-            
-            logger.info(f'Found {len(cited_numbers)} cited messages: {sorted(cited_numbers)}')
-            
-            # Replace ranges with individual linked citations (compact format)
-            def replace_range(match):
-                start_num = int(match.group(1))
-                end_num = int(match.group(2))
-                links = []
-                for msg_num in range(start_num, end_num + 1):
-                    if msg_num in message_number_map:
-                        msg = message_number_map[msg_num]
-                        msg_link = f"https://discord.com/channels/{ctx.guild.id}/{ctx.channel.id}/{msg.id}"
-                        links.append(f"[#{msg_num}]({msg_link})")
-                    else:
-                        links.append(f"[#{msg_num}]")
-                return "-".join(links) if links else match.group(0)
-            
-            # Replace individual citations with Discord message links (not part of ranges, compact format)
-            def replace_citation(match):
-                # Skip if already a markdown link (check if followed by ]( )
-                pos = match.start()
-                after_pos = match.end()
-                
-                # Check if this is already inside a markdown link
-                if after_pos < len(response) - 2 and response[after_pos:after_pos+2] == '](':
-                    return match.group(0)  # Already linked, skip
-                
-                # Check if this citation is part of a range by looking at context
-                if after_pos < len(response) and response[after_pos:after_pos+1] == '-':
-                    return match.group(0)  # This is the start of a range, skip it
-                # Check what comes before
-                if pos > 0 and response[pos-1:pos] == '-':
-                    return match.group(0)  # This is the end of a range, skip it
-                    
-                msg_num = int(match.group(1))
-                if msg_num in message_number_map:
-                    msg = message_number_map[msg_num]
-                    msg_link = f"https://discord.com/channels/{ctx.guild.id}/{ctx.channel.id}/{msg.id}"
-                    return f"[#{msg_num}]({msg_link})"
-                return match.group(0)  # Keep original if not found
-            
-            # First replace ranges, then individual citations
-            response = re.sub(range_pattern, replace_range, response)
-            response = re.sub(citation_pattern, replace_citation, response)
-            
-            # Convert custom Discord emoji references to actual emoji format
-            # Pattern: <:emoji_name:emoji_id> or <a:emoji_name:emoji_id> for animated
-            emoji_pattern = r'<(a?):([^:]+):(\d+)>'
-            def render_emoji(match):
-                animated = match.group(1)
-                emoji_name = match.group(2)
-                emoji_id = match.group(3)
-                # Return proper Discord emoji format
-                return f"<{animated}:{emoji_name}:{emoji_id}>"
-            
-            response = re.sub(emoji_pattern, render_emoji, response)
-            
-            # Convert Discord usernames to mentions
-            response = convert_usernames_to_mentions(response, ctx.guild)
-            
-            # Calculate cost
-            request_cost = 0
-            usage_text = ""
-            if hasattr(completion, 'usage') and completion.usage:
-                if hasattr(completion.usage, 'prompt_tokens_details') and completion.usage.prompt_tokens_details:
-                    cached = completion.usage.prompt_tokens_details.cached_tokens
-                    uncached = completion.usage.prompt_tokens - cached
-                    input_cost = (uncached / 1_000_000) * GROK_TEXT_INPUT_COST + (cached / 1_000_000) * GROK_TEXT_CACHED_COST
-                else:
-                    input_cost = (completion.usage.prompt_tokens / 1_000_000) * GROK_TEXT_INPUT_COST
-                output_cost = (completion.usage.completion_tokens / 1_000_000) * GROK_TEXT_OUTPUT_COST
-                request_cost = input_cost + output_cost
-                usage_text = f"💵 ${request_cost:.6f} • {completion.usage.prompt_tokens} in / {completion.usage.completion_tokens} out"
-            
-            # Delete searching message
-            await searching_msg.delete()
-            
-            # Create response embed
-            if target_user:
-                title = f"🔍 Search Results: {target_user.display_name}"
-            else:
-                title = "🔍 Search Results: Channel History"
-            
-            # Prepare additional fields
-            messages_info = f"{len(collected_messages)} total (analyzed {messages_to_analyze})"
-            if keyword_filter:
-                messages_info += f"\nFiltered by: `{keyword_filter}`"
-            if cited_numbers:
-                messages_info += f"\n{len(cited_numbers)} messages cited"
-            
-            # Split response into chunks if needed (4096 char limit per embed description)
-            # When splitting, ensure we don't break citations in the middle
-            if len(response) <= 4096:
-                # Single embed response
-                embed = discord.Embed(
-                    title=title,
-                    description=response,
-                    color=discord.Color.purple(),
-                    timestamp=ctx.message.created_at
-                )
-                embed.set_author(
-                    name="Grok Search",
-                    icon_url="https://pbs.twimg.com/profile_images/1683899100922511378/5lY42eHs_400x400.jpg"
-                )
-                embed.add_field(
-                    name="💡 Follow-up",
-                    value="Reply to this message to ask more questions about this user's history",
-                    inline=False
-                )
-                footer_text = f"Requested by {ctx.author.display_name}"
-                if usage_text:
-                    footer_text += f" • {usage_text}"
-                embed.set_footer(text=footer_text, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-                
-                await ctx.reply(embed=embed)
-            else:
-                # Split into multiple embeds, but avoid breaking citations
-                chunks = []
-                current_chunk = ""
-                
-                # Split by sentences/paragraphs first to avoid breaking markdown links
-                paragraphs = response.split('\n\n')
-                
-                for para in paragraphs:
-                    # If adding this paragraph would exceed limit, start new chunk
-                    if len(current_chunk) + len(para) + 2 > 4096:  # +2 for \n\n
-                        if current_chunk:
-                            chunks.append(current_chunk.rstrip())
-                            current_chunk = para + '\n\n'
-                        else:
-                            # Paragraph itself is too long, need to split it more carefully
-                            sentences = para.split('. ')
-                            for sentence in sentences:
-                                if len(current_chunk) + len(sentence) + 2 > 4096:
-                                    if current_chunk:
-                                        chunks.append(current_chunk.rstrip())
-                                        current_chunk = sentence + '. '
-                                    else:
-                                        # Even a single sentence is too long, force split but try to avoid breaking links
-                                        # Find a safe break point (space not inside a markdown link)
-                                        safe_length = 4096
-                                        chunk_text = sentence[:safe_length]
-                                        
-                                        # Check if we're in the middle of a markdown link
-                                        last_bracket = chunk_text.rfind('[')
-                                        last_paren = chunk_text.rfind('(')
-                                        close_bracket = chunk_text.rfind(']')
-                                        close_paren = chunk_text.rfind(')')
-                                        
-                                        # If we have an open bracket/paren without close, find a safer break
-                                        if (last_bracket > close_bracket) or (last_paren > close_paren):
-                                            # Find last complete space before the link started
-                                            last_safe_space = chunk_text.rfind(' ', 0, last_bracket if last_bracket > last_paren else last_paren)
-                                            if last_safe_space > 0:
-                                                chunk_text = sentence[:last_safe_space]
-                                        
-                                        chunks.append(chunk_text)
-                                        current_chunk = sentence[len(chunk_text):] + '. '
-                                else:
-                                    current_chunk += sentence + '. '
-                    else:
-                        current_chunk += para + '\n\n'
-                
-                # Add remaining chunk
-                if current_chunk.strip():
-                    chunks.append(current_chunk.rstrip())
-                
-                logger.info(f'Search response split into {len(chunks)} embeds')
-                
-                # Helper function to calculate total embed size
-                def get_embed_size(embed):
-                    size = 0
-                    if embed.title:
-                        size += len(embed.title)
-                    if embed.description:
-                        size += len(embed.description)
-                    if embed.footer and embed.footer.text:
-                        size += len(embed.footer.text)
-                    if embed.author and embed.author.name:
-                        size += len(embed.author.name)
-                    for field in embed.fields:
-                        if field.name:
-                            size += len(field.name)
-                        if field.value:
-                            size += len(field.value)
-                    return size
-                
-                for i, chunk in enumerate(chunks):
-                    embed = discord.Embed(
-                        title=f"{title} (Part {i+1}/{len(chunks)})" if i > 0 else title,
-                        description=chunk,
-                        color=discord.Color.purple(),
-                        timestamp=ctx.message.created_at
-                    )
-                    embed.set_author(
-                        name="Grok Search",
-                        icon_url="https://pbs.twimg.com/profile_images/1683899100922511378/5lY42eHs_400x400.jpg"
-                    )
-                    
-                    # Add fields and footer only to last embed
-                    if i == len(chunks) - 1:
-                        embed.add_field(
-                            name="💡 Follow-up",
-                            value="Reply to this message to ask more questions about this user's history",
-                            inline=False
-                        )
-                        footer_text = f"Requested by {ctx.author.display_name}"
-                        if usage_text:
-                            footer_text += f" • {usage_text}"
-                        embed.set_footer(text=footer_text, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-                    
-                    # Check if embed size exceeds limit (6000 chars total)
-                    embed_size = get_embed_size(embed)
-                    if embed_size > 5800:  # Leave some buffer
-                        # Need to split this chunk further
-                        logger.warning(f'Embed {i+1} size {embed_size} exceeds limit, splitting further')
-                        # Split description in half
-                        mid_point = len(chunk) // 2
-                        # Find a good break point (paragraph or sentence)
-                        break_point = chunk.rfind('\n\n', 0, mid_point)
-                        if break_point == -1:
-                            break_point = chunk.rfind('. ', 0, mid_point)
-                        if break_point == -1:
-                            break_point = chunk.rfind(' ', 0, mid_point)
-                        if break_point == -1:
-                            break_point = mid_point
-                        
-                        # Insert the second half back into chunks
-                        first_half = chunk[:break_point].rstrip()
-                        second_half = chunk[break_point:].lstrip()
-                        chunks[i] = first_half
-                        chunks.insert(i + 1, second_half)
-                        
-                        # Update embed with first half
-                        embed.description = first_half
-                        # Update title to reflect new total
-                        if i > 0:
-                            embed.title = f"{title} (Part {i+1}/{len(chunks)})"
-                        
-                        logger.info(f'Split embed into 2 parts, now have {len(chunks)} total chunks')
-                    
-                    await ctx.reply(embed=embed)
-            
-            logger.info(f'Search completed successfully')
-            
-    except Exception as e:
-        logger.error(f'Error in search command: {e}', exc_info=True)
-        try:
-            await searching_msg.edit(content=f"❌ Error searching messages: {str(e)}")
-        except:
-            # If searching message was already deleted, send a new message
-            await ctx.reply(f"❌ Error searching messages: {str(e)}")
 
 async def should_search_discord_history(message_content, has_mentions):
     """
@@ -1136,18 +783,18 @@ Respond with ONLY one word: "DISCORD" or "GENERAL"
 """
     
     try:
-        # Use a quick, cheap API call for classification
-        completion = client.chat.completions.create(
+        # Use SDK for quick classification (no search needed)
+        response, usage, _, _ = await sdk_chat_request(
             model=GROK_TEXT_MODEL,
-            messages=[{"role": "user", "content": classification_prompt}],
-            max_tokens=10,  # We only need one word
-            temperature=0.3  # Lower temperature for more consistent classification
+            system_prompt="You are a query classifier. Respond with exactly one word.",
+            user_prompt=classification_prompt,
+            include_search=False
         )
         
-        response = completion.choices[0].message.content.strip().upper()
-        logger.info(f'Grok classification result: {response}')
+        result = response.strip().upper()
+        logger.info(f'Grok classification result: {result}')
         
-        return "DISCORD" in response
+        return "DISCORD" in result
     except Exception as e:
         logger.error(f'Error in Grok classification: {e}')
         return False
@@ -1308,25 +955,15 @@ async def perform_discord_history_search(message, query, time_limit=None, keywor
         context_parts.append("\nIMPORTANT: For every citation, use ONLY the format [#N] with no channel name, emoji, or extra formatting. Example: [#1], [#2], etc.\n")
         full_prompt = "\n".join(context_parts)
         
-        # Query Grok
+        # Query Grok using SDK (no web search for Discord history analysis)
         async with message.channel.typing():
-            request_params = {
-                "model": GROK_TEXT_MODEL,
-                "messages": [{"role": "user", "content": full_prompt}]
-            }
-            if ENABLE_WEB_SEARCH:
-                request_params["extra_body"] = {
-                    "search_parameters": {
-                        "mode": "auto",
-                        "max_search_results": MAX_SEARCH_RESULTS
-                    }
-                }
-            completion = client.chat.completions.create(**request_params)
-
-            response = completion.choices[0].message.content
-
-
-
+            system_prompt = "You are a helpful assistant analyzing Discord message history. Follow JSON output format exactly."
+            response, usage, _, _ = await sdk_chat_request(
+                model=GROK_TEXT_MODEL,
+                system_prompt=system_prompt,
+                user_prompt=full_prompt,
+                include_search=False  # Don't web search for Discord history
+            )
 
             # --- Begin JSON extraction and parsing ---
             import json as _json
@@ -1426,32 +1063,108 @@ async def perform_discord_history_search(message, query, time_limit=None, keywor
         # Remove patterns like: @1234567890 (which is @username)
         answer = re.sub(r'(@\d+) ?\(which is \<@!?\d+\>\)', r'\1', answer)
 
-        # Calculate cost
+        # Calculate cost from SDK usage dict
         request_cost = 0
         usage_text = ""
-        if hasattr(completion, 'usage') and completion.usage:
-            if hasattr(completion.usage, 'prompt_tokens_details') and completion.usage.prompt_tokens_details:
-                cached = completion.usage.prompt_tokens_details.cached_tokens
-                uncached = completion.usage.prompt_tokens - cached
-                input_cost = (uncached / 1_000_000) * GROK_TEXT_INPUT_COST + (cached / 1_000_000) * GROK_TEXT_CACHED_COST
-            else:
-                input_cost = (completion.usage.prompt_tokens / 1_000_000) * GROK_TEXT_INPUT_COST
-            output_cost = (completion.usage.completion_tokens / 1_000_000) * GROK_TEXT_OUTPUT_COST
+        if usage:
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+            input_cost = (prompt_tokens / 1_000_000) * GROK_TEXT_INPUT_COST
+            output_cost = (completion_tokens / 1_000_000) * GROK_TEXT_OUTPUT_COST
             request_cost = input_cost + output_cost
-            usage_text = f"💵 ${request_cost:.6f} • {completion.usage.prompt_tokens} in / {completion.usage.completion_tokens} out"
+            usage_text = f"💵 ${request_cost:.6f} • {prompt_tokens} in / {completion_tokens} out"
 
-            await searching_msg.delete()
+        await searching_msg.delete()
 
-            # Only show the answer (with inline citations), no separate sources or confidence
-            title = "🔍 Discord History Analysis"
-            if target_user:
-                title += f": {target_user.display_name}"
-            if len(answer) <= 4096:
-
-
+        # Only show the answer (with inline citations), no separate sources or confidence
+        title = "🔍 Discord History Analysis"
+        if target_user:
+            title += f": {target_user.display_name}"
+        if len(answer) <= 4096:
+            embed = discord.Embed(
+                title=title,
+                description=answer,
+                color=discord.Color.purple(),
+                timestamp=message.created_at
+            )
+            embed.set_author(
+                name="Grok Analysis",
+                icon_url="https://pbs.twimg.com/profile_images/1683899100922511378/5lY42eHs_400x400.jpg"
+            )
+            analyzed_text = f"{messages_to_analyze} messages analyzed"
+            if len(collected_messages) > messages_to_analyze:
+                analyzed_text += f" ({len(collected_messages)} found)"
+            if messages_for_context:
+                oldest_msg = messages_for_context[-1]
+                oldest_date = oldest_msg.created_at.astimezone(TIMEZONE)
+                analyzed_text += f" • Oldest: {oldest_date.strftime('%Y-%m-%d %H:%M %Z')}"
+            # Removed the 'Analyzed' field for a cleaner embed
+            footer_text = f"Requested by {message.author.display_name}"
+            if usage_text:
+                footer_text += f" • {usage_text}"
+            embed.set_footer(text=footer_text, icon_url=message.author.avatar.url if message.author.avatar else None)
+            await message.reply(embed=embed)
+        else:
+            # Split into multiple embeds
+            chunks = []
+            current_chunk = ""
+            
+            # Split by paragraphs to avoid breaking markdown links
+            paragraphs = response.split('\n\n')
+            
+            for para in paragraphs:
+                # Check if adding this paragraph would exceed limit
+                if len(current_chunk) + len(para) + 2 > 4096:
+                    if current_chunk:
+                        chunks.append(current_chunk.rstrip())
+                        current_chunk = ""
+                    
+                    # If paragraph itself is too long, split it
+                    if len(para) > 4096:
+                        # Split by sentences
+                        sentences = para.split('. ')
+                        for sentence in sentences:
+                            sentence_with_period = sentence + '. ' if not sentence.endswith('.') else sentence + ' '
+                            
+                            if len(current_chunk) + len(sentence_with_period) > 4096:
+                                if current_chunk:
+                                    chunks.append(current_chunk.rstrip())
+                                    current_chunk = ""
+                                
+                                # If single sentence is too long, force split
+                                if len(sentence_with_period) > 4096:
+                                    for i in range(0, len(sentence_with_period), 4096):
+                                        chunks.append(sentence_with_period[i:i+4096])
+                                else:
+                                    current_chunk = sentence_with_period
+                            else:
+                                current_chunk += sentence_with_period
+                    else:
+                        current_chunk = para + '\n\n'
+                else:
+                    current_chunk += para + '\n\n'
+            
+            if current_chunk.strip():
+                chunks.append(current_chunk.rstrip())
+            
+            # Validate all chunks are within limit
+            validated_chunks = []
+            for chunk in chunks:
+                if len(chunk) > 4096:
+                    logger.warning(f'Chunk exceeded 4096 chars ({len(chunk)}), force splitting...')
+                    # Force split at 4096 boundaries
+                    for i in range(0, len(chunk), 4096):
+                        validated_chunks.append(chunk[i:i+4096])
+                else:
+                    validated_chunks.append(chunk)
+            
+            chunks = validated_chunks
+            logger.info(f'Split response into {len(chunks)} embeds (validated)')
+            
+            for i, chunk in enumerate(chunks):
                 embed = discord.Embed(
-                    title=title,
-                    description=answer,
+                    title=f"{title} (Part {i+1}/{len(chunks)})" if i > 0 else title,
+                    description=chunk,
                     color=discord.Color.purple(),
                     timestamp=message.created_at
                 )
@@ -1459,109 +1172,28 @@ async def perform_discord_history_search(message, query, time_limit=None, keywor
                     name="Grok Analysis",
                     icon_url="https://pbs.twimg.com/profile_images/1683899100922511378/5lY42eHs_400x400.jpg"
                 )
-                analyzed_text = f"{messages_to_analyze} messages analyzed"
-                if len(collected_messages) > messages_to_analyze:
-                    analyzed_text += f" ({len(collected_messages)} found)"
-                if messages_for_context:
-                    oldest_msg = messages_for_context[-1]
-                    oldest_date = oldest_msg.created_at.astimezone(TIMEZONE)
-                    analyzed_text += f" • Oldest: {oldest_date.strftime('%Y-%m-%d %H:%M %Z')}"
-                # Removed the 'Analyzed' field for a cleaner embed
-                footer_text = f"Requested by {message.author.display_name}"
-                if usage_text:
-                    footer_text += f" • {usage_text}"
-                embed.set_footer(text=footer_text, icon_url=message.author.avatar.url if message.author.avatar else None)
+                
+                # Add fields and footer only to last embed
+                if i == len(chunks) - 1:
+                    analyzed_text = f"{messages_to_analyze} messages analyzed"
+                    if len(collected_messages) > messages_to_analyze:
+                        analyzed_text += f" ({len(collected_messages)} found)"
+                    
+                    # Add oldest message date
+                    if messages_for_context:
+                        oldest_msg = messages_for_context[-1]  # Last in list (reversed for chronological)
+                        oldest_date = oldest_msg.created_at.astimezone(TIMEZONE)
+                        analyzed_text += f"\nOldest: {oldest_date.strftime('%Y-%m-%d %H:%M %Z')}"
+                    
+                    # Removed the 'Analyzed' field for a cleaner embed
+                    footer_text = f"Requested by {message.author.display_name}"
+                    if usage_text:
+                        footer_text += f" • {usage_text}"
+                    embed.set_footer(text=footer_text, icon_url=message.author.avatar.url if message.author.avatar else None)
+                
                 await message.reply(embed=embed)
-            else:
-                # Split into multiple embeds
-                chunks = []
-                current_chunk = ""
-                
-                # Split by paragraphs to avoid breaking markdown links
-                paragraphs = response.split('\n\n')
-                
-                for para in paragraphs:
-                    # Check if adding this paragraph would exceed limit
-                    if len(current_chunk) + len(para) + 2 > 4096:
-                        if current_chunk:
-                            chunks.append(current_chunk.rstrip())
-                            current_chunk = ""
-                        
-                        # If paragraph itself is too long, split it
-                        if len(para) > 4096:
-                            # Split by sentences
-                            sentences = para.split('. ')
-                            for sentence in sentences:
-                                sentence_with_period = sentence + '. ' if not sentence.endswith('.') else sentence + ' '
-                                
-                                if len(current_chunk) + len(sentence_with_period) > 4096:
-                                    if current_chunk:
-                                        chunks.append(current_chunk.rstrip())
-                                        current_chunk = ""
-                                    
-                                    # If single sentence is too long, force split
-                                    if len(sentence_with_period) > 4096:
-                                        for i in range(0, len(sentence_with_period), 4096):
-                                            chunks.append(sentence_with_period[i:i+4096])
-                                    else:
-                                        current_chunk = sentence_with_period
-                                else:
-                                    current_chunk += sentence_with_period
-                        else:
-                            current_chunk = para + '\n\n'
-                    else:
-                        current_chunk += para + '\n\n'
-                
-                if current_chunk.strip():
-                    chunks.append(current_chunk.rstrip())
-                
-                # Validate all chunks are within limit
-                validated_chunks = []
-                for chunk in chunks:
-                    if len(chunk) > 4096:
-                        logger.warning(f'Chunk exceeded 4096 chars ({len(chunk)}), force splitting...')
-                        # Force split at 4096 boundaries
-                        for i in range(0, len(chunk), 4096):
-                            validated_chunks.append(chunk[i:i+4096])
-                    else:
-                        validated_chunks.append(chunk)
-                
-                chunks = validated_chunks
-                logger.info(f'Split response into {len(chunks)} embeds (validated)')
-                
-                for i, chunk in enumerate(chunks):
-                    embed = discord.Embed(
-                        title=f"{title} (Part {i+1}/{len(chunks)})" if i > 0 else title,
-                        description=chunk,
-                        color=discord.Color.purple(),
-                        timestamp=message.created_at
-                    )
-                    embed.set_author(
-                        name="Grok Analysis",
-                        icon_url="https://pbs.twimg.com/profile_images/1683899100922511378/5lY42eHs_400x400.jpg"
-                    )
-                    
-                    # Add fields and footer only to last embed
-                    if i == len(chunks) - 1:
-                        analyzed_text = f"{messages_to_analyze} messages analyzed"
-                        if len(collected_messages) > messages_to_analyze:
-                            analyzed_text += f" ({len(collected_messages)} found)"
-                        
-                        # Add oldest message date
-                        if messages_for_context:
-                            oldest_msg = messages_for_context[-1]  # Last in list (reversed for chronological)
-                            oldest_date = oldest_msg.created_at.astimezone(TIMEZONE)
-                            analyzed_text += f"\nOldest: {oldest_date.strftime('%Y-%m-%d %H:%M %Z')}"
-                        
-                        # Removed the 'Analyzed' field for a cleaner embed
-                        footer_text = f"Requested by {message.author.display_name}"
-                        if usage_text:
-                            footer_text += f" • {usage_text}"
-                        embed.set_footer(text=footer_text, icon_url=message.author.avatar.url if message.author.avatar else None)
-                    
-                    await message.reply(embed=embed)
-            
-            logger.info('Discord history analysis completed')
+        
+        logger.info('Discord history analysis completed')
             
     except Exception as e:
         logger.error(f'Error in Discord history search: {e}', exc_info=True)
@@ -1589,19 +1221,29 @@ async def on_message(message):
         url = url_or_filename.lower()
         return url.endswith('.jpg') or url.endswith('.jpeg') or url.endswith('.png') or url.endswith('.webp')
 
-    # Helper: check if document filename is supported
+    # Helper: check if document filename is supported (per xAI docs)
     def is_supported_document(filename):
         filename = filename.lower()
-        return filename.endswith('.pdf') or filename.endswith('.docx') or filename.endswith('.txt')
+        supported_extensions = ('.pdf', '.txt', '.md', '.csv', '.json', '.py', '.js', '.java', '.c', '.cpp', '.h', '.ts', '.go', '.rs', '.rb', '.php')
+        return filename.endswith(supported_extensions)
 
     # Check if bot is mentioned OR if user is replying to bot's message
     is_bot_mentioned = bot.user in message.mentions
     is_replying_to_bot = False
+    previous_xai_response_id = None  # For xAI Chat Responses API continuation
+    current_xai_response_id = None  # Will be set after SDK response for storage
 
     if message.reference:
         try:
             replied_msg = await message.channel.fetch_message(message.reference.message_id)
             is_replying_to_bot = replied_msg.author == bot.user
+            
+            # Check if we have a stored xAI response ID for this conversation
+            if is_replying_to_bot:
+                stored_convo = get_conversation(replied_msg.id)
+                if stored_convo and stored_convo.get('xai_response_id'):
+                    previous_xai_response_id = stored_convo['xai_response_id']
+                    logger.info(f'Found previous xAI response ID: {previous_xai_response_id}')
         except:
             pass
 
@@ -1612,13 +1254,15 @@ async def on_message(message):
             logger.info(f'Bot mentioned by {message.author} in #{message.channel}')
 
         # Normalize prompt: remove all bot mentions and extra whitespace
+        import re
         prompt = message.content
         prompt = re.sub(r'<@!?'+str(bot.user.id)+r'>', '', prompt)
         prompt = prompt.strip()
         logger.info(f'Normalized prompt for intent detection: "{prompt}"')
 
         # Check if this is a Discord history analysis query (if feature enabled)
-        if ENABLE_NL_HISTORY_SEARCH:
+        # Skip this check if we're replying to a bot message with stored conversation context
+        if ENABLE_NL_HISTORY_SEARCH and not previous_xai_response_id:
             target_user = message.mentions[0] if message.mentions and message.mentions[0] != bot.user else None
             should_search, time_limit, keywords = await should_search_discord_history(prompt, target_user is not None)
             logger.info(f'should_search_discord_history result: should_search={should_search}, time_limit={time_limit}, keywords={keywords}')
@@ -1632,6 +1276,8 @@ async def on_message(message):
                     target_user=target_user
                 )
                 return  # Don't process as normal query
+        elif previous_xai_response_id:
+            logger.info(f'Skipping Discord history search check - using stored conversation context (xAI response ID: {previous_xai_response_id})')
         
         # Check if this is a follow-up to a previous conversation
         is_search_followup = False
@@ -1650,33 +1296,37 @@ async def on_message(message):
             prompt = prompt.strip()
             logger.info(f'Normalized prompt for intent detection: "{prompt}"')
 
+            # --- IMAGE REVISION DETECTION ---
+            # If replying to a bot-generated image, treat as a revision request
+            if is_replying_to_bot and message.reference:
+                try:
+                    replied_msg = await message.channel.fetch_message(message.reference.message_id)
+                    # Check if the replied message has an image embed with our format
+                    if replied_msg.embeds:
+                        for embed in replied_msg.embeds:
+                            if embed.title and "Grok AI Generated Image" in embed.title and embed.description:
+                                # Extract the original prompt from the embed description
+                                original_prompt_match = re.search(r'\*\*Prompt:\*\*\s*(.+)', embed.description)
+                                if original_prompt_match:
+                                    original_prompt = original_prompt_match.group(1).strip()
+                                    logger.info(f'Detected image revision request. Original prompt: "{original_prompt}"')
+                                    logger.info(f'Revision request: "{prompt}"')
+                                    # Combine original prompt with revision instructions
+                                    revised_prompt = f"{original_prompt}. Revision: {prompt}"
+                                    logger.info(f'Combined revised prompt: "{revised_prompt}"')
+                                    await generate_image(message, revised_prompt)
+                                    return
+                except Exception as e:
+                    logger.warning(f'Error checking for image revision: {e}')
+
             # --- IMAGE GENERATION NATURAL LANGUAGE DETECTION ---
-            # Use advanced_nlp_parse to extract intent and topics
+            # Use lightweight pattern-based intent detection
             nlp_result = advanced_nlp_parse(prompt)
-            image_intent_phrases = [
-                'generate an image', 'generate me an image', 'create an image', 'draw an image',
-                'make an image', 'image of', 'picture of', 'show me an image', 'show me a picture',
-                'visualize', 'illustrate', 'art of', 'artwork of', 'paint', 'sketch', 'render', 'grok, make me an image', 'grok, generate an image'
-            ]
-            # Lowercase for matching
-            prompt_lower = prompt.lower()
-            is_image_request = any(phrase in prompt_lower for phrase in image_intent_phrases)
-            # Also check for intent label if using zero-shot
-            if nlp_result.get('intent') and 'image' in nlp_result['intent'].lower():
-                is_image_request = True
-            # If detected, call imagine logic directly
+            is_image_request = nlp_result.get('intent') == 'image_generation'
+            # If detected, call image generation directly
             if is_image_request:
                 logger.info('Detected image generation intent in natural language')
-                class DummyCtx:
-                    def __init__(self, message):
-                        self.message = message
-                        self.author = message.author
-                        self.channel = message.channel
-                        self.guild = message.guild
-                        self.trigger_typing = message.channel.typing
-                        self.reply = message.reply
-                ctx = DummyCtx(message)
-                await imagine(ctx, prompt=prompt)
+                await generate_image(message, prompt)
                 return
 
             # --- END IMAGE GENERATION DETECTION ---
@@ -1730,8 +1380,8 @@ async def on_message(message):
                     else:
                         logger.warning(f'Skipping unsupported media format: {media_url}')
         
-        # If replying to another message, get full context (unless using conversation history)
-        if message.reference and not use_conversation_history:
+        # If replying to another message, get full context (unless using conversation history OR we have server-side context)
+        if message.reference and not use_conversation_history and not previous_xai_response_id:
             logger.info('Message is a reply, fetching conversation context...')
             try:
                 # First, traverse the reply chain
@@ -1851,10 +1501,12 @@ async def on_message(message):
                 
             except Exception as e:
                 logger.warning(f'Could not fetch conversation context: {e}')
+        elif message.reference and previous_xai_response_id:
+            logger.info(f'Skipping context fetch - using xAI server-side conversation history (response ID: {previous_xai_response_id})')
         
-        if not prompt and not image_urls:
-            logger.warning('No prompt or images found')
-            await message.reply("Please provide a question or image after mentioning me.")
+        if not prompt and not image_urls and not document_attachments:
+            logger.warning('No prompt, images, or documents found')
+            await message.reply("Please provide a question, image, or document after mentioning me.")
             return
         
         # Notify user about unsupported images if any
@@ -1868,36 +1520,53 @@ async def on_message(message):
         try:
             usage_text = ""
             async with message.channel.typing():
-                # Upload document files to Grok if present
+                # Upload document files to Grok if present using xAI SDK
                 grok_file_ids = []
+                failed_uploads = []
+                xai_client = None
                 if document_attachments:
-                    async with aiohttp.ClientSession() as session:
-                        for attachment in document_attachments:
-                            with tempfile.NamedTemporaryFile(delete=True) as tmp:
-                                await attachment.save(tmp.name)
-                                tmp.flush()
-                                files_url = "https://api.x.ai/v1/files"
-                                headers = {"Authorization": f"Bearer {XAI_KEY}"}
-                                with open(tmp.name, "rb") as f:
-                                    data = aiohttp.FormData()
-                                    data.add_field('file', f, filename=attachment.filename)
-                                    async with session.post(files_url, headers=headers, data=data) as resp:
-                                        if resp.status == 200:
-                                            result = await resp.json()
-                                            file_id = result.get('id') or result.get('file_id')
-                                            if file_id:
-                                                grok_file_ids.append(file_id)
-                                                logger.info(f'Uploaded {attachment.filename} to Grok, file_id={file_id}')
-                                            else:
-                                                logger.warning(f'No file_id returned for {attachment.filename}')
-                                        else:
-                                            logger.error(f'Failed to upload {attachment.filename} to Grok: {resp.status}')
+                    xai_client = XAIAsyncClient()
+                    for attachment in document_attachments:
+                        tmp_path = None
+                        try:
+                            # Use delete=False for Windows compatibility
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(attachment.filename)[1]) as tmp:
+                                tmp_path = tmp.name
+                                await attachment.save(tmp_path)
+                            
+                            # Upload using xAI SDK
+                            uploaded_file = await xai_client.files.upload(tmp_path)
+                            grok_file_ids.append(uploaded_file.id)
+                            logger.info(f'Uploaded {attachment.filename} to Grok via SDK, file_id={uploaded_file.id}')
+                        except Exception as upload_error:
+                            logger.error(f'Error uploading {attachment.filename}: {upload_error}')
+                            failed_uploads.append(attachment.filename)
+                        finally:
+                            # Clean up temp file
+                            if tmp_path and os.path.exists(tmp_path):
+                                try:
+                                    os.unlink(tmp_path)
+                                except:
+                                    pass
+                    
+                    # Notify user if some uploads failed
+                    if failed_uploads and not grok_file_ids:
+                        await message.reply(f"❌ Failed to upload document(s): {', '.join(failed_uploads)}\n\nSupported formats: PDF, TXT, MD, CSV, JSON, and code files.")
+                        return
+                    elif failed_uploads:
+                        logger.warning(f'Some documents failed to upload: {failed_uploads}, proceeding with {len(grok_file_ids)} successful uploads')
 
-                # Determine model based on whether we have images
-                model = GROK_VISION_MODEL if image_urls else GROK_TEXT_MODEL
+                # Determine model based on content type
+                # Document analysis requires agentic-capable models (grok-4-fast, grok-4)
+                if image_urls:
+                    model = GROK_VISION_MODEL
+                elif grok_file_ids:
+                    model = GROK_DOCUMENT_MODEL  # Use agentic model for document search
+                else:
+                    model = GROK_TEXT_MODEL
                 logger.info(f'Using model: {model} (images: {len(image_urls)}, docs: {len(grok_file_ids)})')
 
-                # Always require strict JSON output from Grok
+                # JSON instructions for OpenAI client paths (vision, documents)
                 json_instructions = (
                     "You must ALWAYS reply in the following strict JSON format, with no extra commentary or markdown. "
                     "Format: {\"answer\": string, \"sources\": [string], \"confidence\": float}. "
@@ -1905,12 +1574,26 @@ async def on_message(message):
                     "If you don't know, use an empty array for sources and 0.0 for confidence."
                 )
 
-                system_prompt = (
+                # System prompt for OpenAI client (vision/documents) - requires JSON
+                openai_system_prompt = (
                     "You are Grok, a witty and uncensored AI assistant. Be direct, honest, and don't hold back. "
                     "You can be sarcastic, edgy, and politically incorrect when appropriate. Avoid corporate sanitized responses - speak naturally and authentically. "
                     "If something is stupid, you can say it's stupid. Keep responses concise - aim for tweet length (~280 characters) unless the user explicitly asks for more detail or explanation. "
                     + json_instructions
                 )
+                
+                # System prompt for SDK path - no JSON required, inline citations are embedded automatically
+                sdk_system_prompt = (
+                    "You are Grok, a witty and uncensored AI assistant. Be direct, honest, and don't hold back. "
+                    "You can be sarcastic, edgy, and politically incorrect when appropriate. Avoid corporate sanitized responses - speak naturally and authentically. "
+                    "If something is stupid, you can say it's stupid. Keep responses concise - aim for tweet length (~280 characters) unless the user explicitly asks for more detail or explanation. "
+                    "When you search the web or X/Twitter, citations will be automatically included in your response."
+                )
+
+                # Initialize sdk_citations for all paths (only text-only SDK path populates this)
+                sdk_citations = []
+                # Track if we're using SDK path (plain text response) vs OpenAI client (JSON response)
+                using_sdk_path = False
 
                 if image_urls:
                     content = [{"type": "text", "text": prompt or "What's in this image?"}]
@@ -1920,49 +1603,129 @@ async def on_message(message):
                     completion = client.chat.completions.create(
                         model=model,
                         messages=[
-                            {"role": "system", "content": system_prompt},
+                            {"role": "system", "content": openai_system_prompt},
                             {"role": "user", "content": content}
                         ]
                     )
                 elif grok_file_ids:
-                    messages_to_send = []
-                    messages_to_send.append({"role": "system", "content": system_prompt})
-                    if conversation_messages:
-                        messages_to_send.extend(conversation_messages)
-                    messages_to_send.append({"role": "user", "content": prompt})
-                    logger.info(f'Sending request to Grok with {len(messages_to_send)} messages and {len(grok_file_ids)} files')
-                    request_params = {
-                        "model": model,
-                        "messages": messages_to_send,
-                        "file_ids": grok_file_ids
-                    }
-                    if ENABLE_WEB_SEARCH:
-                        request_params["extra_body"] = {
-                            "search_parameters": {
-                                "mode": "auto",
-                                "max_search_results": MAX_SEARCH_RESULTS
-                            }
-                        }
-                    completion = client.chat.completions.create(**request_params)
+                    # Use xAI SDK for document analysis - this properly handles file attachments
+                    doc_system_prompt = (
+                        "You are Grok, a witty and uncensored AI assistant analyzing an attached document. "
+                        "You have access to the document(s) the user has uploaded. Read and analyze the document content to answer the user's question. "
+                        "Be direct, honest, and thorough in your analysis. "
+                        + json_instructions
+                    )
+                    
+                    # For document analysis, make the prompt explicit about analyzing the attached document
+                    if prompt and prompt.lower().strip() in ["what is this?", "what is this", "what's this?", "what's this", "whats this", "analyze this", "read this", "summarize this", "summarize"]:
+                        user_prompt = f"Please analyze the attached document and answer: {prompt}"
+                    elif prompt:
+                        user_prompt = f"Based on the attached document: {prompt}"
+                    else:
+                        user_prompt = "Please analyze the attached document and provide a comprehensive summary of its key points, main topics, and important details."
+                    
+                    logger.info(f'Sending document request via xAI SDK with {len(grok_file_ids)} files')
+                    logger.info(f'Document analysis prompt: {user_prompt}')
+                    
+                    # Create chat using xAI SDK - this properly handles file attachments via gRPC
+                    chat = xai_client.chat.create(
+                        model=model,
+                        messages=[xai_system(doc_system_prompt)]
+                    )
+                    
+                    # Build content for user message: text prompt + file references
+                    file_contents = [xai_file(fid) for fid in grok_file_ids]
+                    chat.append(xai_user(user_prompt, *file_contents))
+                    
+                    # Get response (non-streaming for simplicity)
+                    sdk_response = await chat.sample()
+                    response_content = sdk_response.content if sdk_response else ""
+                    
+                    # Capture response ID for conversation chaining if available
+                    if sdk_response and hasattr(sdk_response, 'id'):
+                        current_xai_response_id = sdk_response.id
+                        logger.info(f'Document analysis response ID: {current_xai_response_id}')
+                    
+                    logger.info(f'Document analysis via SDK response received ({len(response_content)} chars)')
+                    
+                    # Create a mock completion object to match the OpenAI response structure
+                    class MockUsage:
+                        def __init__(self, usage_data):
+                            self.prompt_tokens = usage_data.total_tokens // 2 if usage_data else 0  # Estimate
+                            self.completion_tokens = usage_data.total_tokens // 2 if usage_data else 0
+                            self.total_tokens = usage_data.total_tokens if usage_data else 0
+                            self.prompt_tokens_details = None
+                            self.num_sources_used = 0
+                    
+                    class MockMessage:
+                        def __init__(self, content):
+                            self.content = content
+                    
+                    class MockChoice:
+                        def __init__(self, message):
+                            self.message = message
+                    
+                    class MockCompletion:
+                        def __init__(self, response, model_name):
+                            self.model = model_name
+                            self.usage = MockUsage(response.usage) if response and hasattr(response, 'usage') else None
+                            self.choices = [MockChoice(MockMessage(response.content if response else ''))]
+                    
+                    completion = MockCompletion(sdk_response, model)
+                    
+                    # Clean up uploaded files after getting response
+                    for fid in grok_file_ids:
+                        try:
+                            await xai_client.files.delete(fid)
+                            logger.info(f'Cleaned up uploaded file: {fid}')
+                        except Exception as cleanup_error:
+                            logger.warning(f'Failed to cleanup file {fid}: {cleanup_error}')
                 else:
-                    messages_to_send = []
-                    messages_to_send.append({"role": "system", "content": system_prompt})
-                    if conversation_messages:
-                        messages_to_send.extend(conversation_messages)
-                    messages_to_send.append({"role": "user", "content": prompt})
-                    logger.info(f'Sending text-only request to Grok with {len(messages_to_send)} messages (history: {len(conversation_messages)})')
-                    request_params = {
-                        "model": model,
-                        "messages": messages_to_send
-                    }
-                    if ENABLE_WEB_SEARCH:
-                        request_params["extra_body"] = {
-                            "search_parameters": {
-                                "mode": "auto",  # Let Grok decide when to search
-                                "max_search_results": MAX_SEARCH_RESULTS
-                            }
-                        }
-                    completion = client.chat.completions.create(**request_params)
+                    # Text-only request using SDK - uses inline citations, no JSON required
+                    using_sdk_path = True
+                    # Use previous_response_id if available for conversation chaining
+                    if previous_xai_response_id:
+                        logger.info(f'Continuing conversation with xAI response ID: {previous_xai_response_id} (not sending local history - using server-side memory)')
+                    else:
+                        logger.info(f'Sending text-only request to Grok via SDK (history: {len(conversation_messages)})')
+                    
+                    response, sdk_usage, sdk_citations, new_response_id = await sdk_chat_request(
+                        model=model,
+                        system_prompt=sdk_system_prompt,
+                        user_prompt=prompt,
+                        conversation_history=conversation_messages if not previous_xai_response_id else None,
+                        include_search=ENABLE_WEB_SEARCH,
+                        previous_response_id=previous_xai_response_id
+                    )
+                    
+                    # Store the new response ID for future conversation chaining
+                    current_xai_response_id = new_response_id
+                    
+                    # Create mock completion for compatibility with existing code
+                    class MockUsage:
+                        def __init__(self, usage_dict):
+                            self.prompt_tokens = usage_dict.get('prompt_tokens', 0)
+                            self.completion_tokens = usage_dict.get('completion_tokens', 0)
+                            self.total_tokens = usage_dict.get('total_tokens', 0)
+                            self.prompt_tokens_details = None
+                            self.num_sources_used = usage_dict.get('num_sources_used', 0)
+                            self.tool_invocations = usage_dict.get('tool_invocations', 0)
+                    
+                    class MockMessage:
+                        def __init__(self, content):
+                            self.content = content
+                    
+                    class MockChoice:
+                        def __init__(self, message):
+                            self.message = message
+                    
+                    class MockCompletion:
+                        def __init__(self, content, model_name, usage_dict):
+                            self.model = model_name
+                            self.usage = MockUsage(usage_dict) if usage_dict else None
+                            self.choices = [MockChoice(MockMessage(content))]
+                    
+                    completion = MockCompletion(response, model, sdk_usage)
 
                 response = completion.choices[0].message.content
                 logger.info(f'Received response from Grok ({len(response)} characters)')
@@ -1985,31 +1748,51 @@ async def on_message(message):
                         else:
                             input_cost = (completion.usage.prompt_tokens / 1_000_000) * GROK_TEXT_INPUT_COST
                         output_cost = (completion.usage.completion_tokens / 1_000_000) * GROK_TEXT_OUTPUT_COST
-                    num_sources = getattr(completion.usage, 'num_sources_used', 0)
-                    search_cost = (num_sources / 1000) * GROK_SEARCH_COST if num_sources > 0 else 0
-                    request_cost = input_cost + output_cost + search_cost
+                    # Calculate tool cost (new model: $5/1000 invocations)
+                    # First check if we have tool_invocations from SDK usage dict
+                    tool_invocations = getattr(completion.usage, 'tool_invocations', 0)
+                    
+                    # Fallback: check for tool_calls in OpenAI-style response
+                    if tool_invocations == 0 and hasattr(completion, 'choices') and completion.choices:
+                        for choice in completion.choices:
+                            if hasattr(choice, 'message') and hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+                                tool_invocations += len(choice.message.tool_calls)
+                    
+                    tool_cost = (tool_invocations / 1000) * GROK_TOOL_COST if tool_invocations > 0 else 0
+                    request_cost = input_cost + output_cost + tool_cost
                     cost_str = f"💵 ${request_cost:.6f}"
                     indicators = []
                     if is_vision:
                         indicators.append(f"👁️ ${vision_cost:.6f} vision")
-                    if search_cost > 0:
-                        indicators.append(f"🔍 ${search_cost:.6f} search")
+                    if tool_cost > 0:
+                        indicators.append(f"🔧 ${tool_cost:.6f} tools ({tool_invocations})")
                     if indicators:
                         cost_str += f" ({', '.join(indicators)})"
                     usage_text = f"{cost_str} • {completion.usage.prompt_tokens} in / {completion.usage.completion_tokens} out"
 
-                # Always parse Grok's response as JSON
-                try:
-                    grok_json = json.loads(response)
-                except Exception as e:
-                    logger.error(f'Failed to parse Grok JSON: {e}\nRaw response: {response}')
-                    await message.reply("❌ Grok did not return valid JSON. Please try again.")
-                    return
+                # Handle SDK path (plain text with inline citations) vs OpenAI path (JSON)
+                import re
+                if using_sdk_path:
+                    # SDK path: response is plain text with inline citations like [[1]](url)
+                    answer = response.strip()
+                    sources = []  # Citations are already embedded in the text
+                else:
+                    # OpenAI path (vision/documents): parse as JSON
+                    json_response = response.strip()
+                    # Remove markdown code blocks (```json ... ``` or ``` ... ```)
+                    json_match = re.match(r'^```(?:json)?\s*\n?([\s\S]*?)\n?```$', json_response, re.DOTALL)
+                    if json_match:
+                        json_response = json_match.group(1).strip()
+                    
+                    try:
+                        grok_json = json.loads(json_response)
+                    except Exception as e:
+                        logger.error(f'Failed to parse Grok JSON: {e}\nRaw response: {response}')
+                        await message.reply("❌ Grok did not return valid JSON. Please try again.")
+                        return
 
-                # Build Discord embed from parsed JSON
-                answer = grok_json.get("answer", "(No answer)")
-                sources = grok_json.get("sources", [])
-                confidence = grok_json.get("confidence", None)
+                    answer = grok_json.get("answer", "(No answer)")
+                    sources = grok_json.get("sources", [])
 
                 embed = discord.Embed(
                     description=answer,
@@ -2022,8 +1805,12 @@ async def on_message(message):
                 )
                 if sources:
                     # For non-Discord queries, show only clickable links (not title and link)
+                    # Filter out internal tool references like "post:0", "X User Result 16"
                     formatted_sources = []
                     for src in sources:
+                        # Skip internal tool references (post:N, X User Result N, x_semantic_search, etc.)
+                        if re.match(r'^(post:\d+|X User Result \d+|x_\w+|web_search|code_execution)', src, re.IGNORECASE):
+                            continue
                         # If the source looks like a Markdown link [title](url), extract just the URL
                         m = re.match(r"\[.*?\]\((https?://[^)]+)\)", src)
                         if m:
@@ -2036,9 +1823,10 @@ async def on_message(message):
                             m2 = re.search(r"(https?://\S+)", src)
                             if m2:
                                 formatted_sources.append(m2.group(1))
-                            else:
-                                formatted_sources.append(src)
-                    embed.add_field(name="Sources", value="\n".join(formatted_sources), inline=False)
+                            # Skip non-URL sources entirely (they're just tool references)
+                    # Only show Sources field if we have actual URLs
+                    if formatted_sources:
+                        embed.add_field(name="Sources", value="\n".join(formatted_sources), inline=False)
                 # Confidence score removed from embed as requested
 
                 footer_text = f"Requested by {message.author.display_name}"
@@ -2048,6 +1836,21 @@ async def on_message(message):
 
                 bot_message = await message.reply(embed=embed)
 
+                # Clean up uploaded files from xAI (to avoid storage buildup)
+                if grok_file_ids:
+                    async with aiohttp.ClientSession() as cleanup_session:
+                        for file_id in grok_file_ids:
+                            try:
+                                delete_url = f"https://api.x.ai/v1/files/{file_id}"
+                                delete_headers = {"Authorization": f"Bearer {XAI_KEY}"}
+                                async with cleanup_session.delete(delete_url, headers=delete_headers) as del_resp:
+                                    if del_resp.status == 200:
+                                        logger.info(f'Cleaned up uploaded file: {file_id}')
+                                    else:
+                                        logger.warning(f'Failed to delete file {file_id}: {del_resp.status}')
+                            except Exception as cleanup_error:
+                                logger.warning(f'Error cleaning up file {file_id}: {cleanup_error}')
+
                 # Store conversation for future context
                 original_prompt = message.content.replace(f'<@{bot.user.id}>', '').replace(f'<@!{bot.user.id}>', '').strip()
                 store_conversation(
@@ -2056,7 +1859,8 @@ async def on_message(message):
                     author_id=message.author.id,
                     user_query=original_prompt,
                     bot_response=answer,
-                    model_used=model
+                    model_used=model,
+                    xai_response_id=current_xai_response_id
                 )
                 logger.info(f'Stored conversation history for bot message {bot_message.id} (asked by user {message.author.id})')
                 return  # Prevent duplicate messages
@@ -2170,7 +1974,7 @@ async def on_message(message):
                 
                 # Track token usage and calculate cost
                 request_cost = 0
-                search_cost = 0
+                tool_cost = 0
                 usage_text = ""
                 if hasattr(completion, 'usage') and completion.usage:
                     # Calculate token cost based on actual model used
@@ -2194,22 +1998,30 @@ async def on_message(message):
                             input_cost = (completion.usage.prompt_tokens / 1_000_000) * GROK_TEXT_INPUT_COST
                         output_cost = (completion.usage.completion_tokens / 1_000_000) * GROK_TEXT_OUTPUT_COST
                     
-                    # Calculate search cost if sources were used
-                    num_sources = getattr(completion.usage, 'num_sources_used', 0)
-                    if num_sources > 0:
-                        search_cost = (num_sources / 1000) * GROK_SEARCH_COST
-                        logger.info(f"Search usage - Sources used: {num_sources}, Cost: ${search_cost:.6f}")
+                    # Calculate tool cost (new model: $5/1000 invocations)
+                    # First check if we have tool_invocations from SDK usage dict
+                    tool_invocations = getattr(completion.usage, 'tool_invocations', 0)
                     
-                    request_cost = input_cost + output_cost + search_cost
+                    # Fallback: check for tool_calls in OpenAI-style response
+                    if tool_invocations == 0 and hasattr(completion, 'choices') and completion.choices:
+                        for choice in completion.choices:
+                            if hasattr(choice, 'message') and hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+                                tool_invocations += len(choice.message.tool_calls)
                     
-                    # Build usage text with vision and search cost breakdowns
+                    if tool_invocations > 0:
+                        tool_cost = (tool_invocations / 1000) * GROK_TOOL_COST
+                        logger.info(f"Tool usage - Invocations: {tool_invocations}, Cost: ${tool_cost:.6f}")
+                    
+                    request_cost = input_cost + output_cost + tool_cost
+                    
+                    # Build usage text with vision and tool cost breakdowns
                     cost_str = f"💵 ${request_cost:.6f}"
                     indicators = []
                     
                     if is_vision:
                         indicators.append(f"👁️ ${vision_cost:.6f} vision")
-                    if search_cost > 0:
-                        indicators.append(f"🔍 ${search_cost:.6f} search")
+                    if tool_cost > 0:
+                        indicators.append(f"🔧 ${tool_cost:.6f} tools ({tool_invocations})")
                     
                     if indicators:
                         cost_str += f" ({', '.join(indicators)})"
@@ -2230,6 +2042,10 @@ async def on_message(message):
                         name="Grok Response",
                         icon_url="https://pbs.twimg.com/profile_images/1683899100922511378/5lY42eHs_400x400.jpg"
                     )
+                    
+                    # Citations are now inline in the response text as [[1]](url) format
+                    # No need for separate Sources field
+                    
                     footer_text = f"Requested by {message.author.display_name}"
                     if usage_text:
                         footer_text += f" • {usage_text}"
@@ -2249,7 +2065,8 @@ async def on_message(message):
                         author_id=message.author.id,
                         user_query=original_prompt,
                         bot_response=response,
-                        model_used=model
+                        model_used=model,
+                        xai_response_id=current_xai_response_id
                     )
                     logger.info(f'Stored conversation history for bot message {bot_message.id} (asked by user {message.author.id})')
                 else:
@@ -2288,7 +2105,8 @@ async def on_message(message):
                             author_id=message.author.id,
                             user_query=original_prompt,
                             bot_response=response,
-                            model_used=model
+                            model_used=model,
+                            xai_response_id=current_xai_response_id
                         )
                         logger.info(f'Stored conversation history for bot message {bot_message.id} (asked by user {message.author.id})')
                 

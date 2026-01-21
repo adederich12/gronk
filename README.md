@@ -8,7 +8,7 @@ A Discord bot that integrates with xAI's Grok API to answer questions, with adva
 
 ## Features
 
-- 🤖 **AI Responses**: Powered by Grok-4-fast for text and Grok-2-vision for images
+- 🤖 **AI Responses**: Powered by Grok-4-fast for text and Grok-2-vision for images (using official xAI SDK)
 - 🔎 **Advanced Message Search**: Search and analyze message history with inline citations
   - Search by user or entire channel
   - Keyword filtering for targeted searches
@@ -20,8 +20,10 @@ A Discord bot that integrates with xAI's Grok API to answer questions, with adva
   - "summarize our conversations from last week"
   - Automatically detects when to search Discord vs. general questions
 - 🖼️ **Image Analysis**: Upload images or paste image URLs for vision analysis
-- 📄 **Document Analysis**: Upload PDFs, DOCX, or TXT files for Grok-powered answers (files are sent directly to Grok via the files API)
-- 🔍 **Live Web Search**: Real-time web searches with automatic citations
+- 📄 **Document Analysis**: Upload PDFs, TXT, code files for Grok-powered answers (using xAI SDK file upload)
+- 🔍 **Live Web Search**: Real-time web searches with native SDK search parameters and citations
+- 🐦 **X/Twitter Search** (Optional): Search X/Twitter for real-time social context
+- 💻 **Code Execution** (Optional): Let Grok run Python code for calculations and data analysis
 - 💬 **Conversation Memory (Memory Bank)**: Persistent SQLite storage remembers full conversation threads and acts as a memory bank
   - Stores every user query and bot response for context and follow-up
   - Automatic cleanup of old conversations (configurable retention period)
@@ -45,7 +47,9 @@ A Discord bot that integrates with xAI's Grok API to answer questions, with adva
 ### Python Dependencies
 All dependencies are listed in `requirements.txt`:
 - `discord.py` - Discord bot framework
-- `openai` - OpenAI-compatible client for xAI Grok API
+- `openai` - OpenAI-compatible client (used for vision API)
+- `xai-sdk` - Official xAI SDK for chat, file uploads, web search, X search, and code execution
+- `aiohttp` - Async HTTP client for image generation API
 - `python-dotenv` - Environment variable management
 - `pytz` - Timezone handling for accurate timestamps
 - `spacy` - Advanced NLP for entity and topic extraction
@@ -60,29 +64,35 @@ All dependencies are listed in `requirements.txt`:
 -
 ## Document Support (NEW!)
 
-You can now upload PDF, DOCX, or TXT files as Discord attachments when mentioning the bot or replying to it. The bot will upload these files directly to Grok via the files API and include them in the analysis. This enables:
+You can now upload documents as Discord attachments when mentioning the bot or replying to it. The bot uses the official xAI SDK to upload files and analyze them with Grok. This enables:
 
-- 📄 **PDF, DOCX, TXT support**: Ask questions about the contents of attached documents
+- 📄 **Multiple file formats**: PDF, TXT, MD, CSV, JSON, and code files (.py, .js, .java, .c, .cpp, .ts, .go, .rs, .rb, .php)
 - 🔗 **Multi-file support**: Attach multiple supported documents in a single message
+- 🧹 **Automatic cleanup**: Files are deleted from xAI servers after analysis
 - 🚫 **Unsupported files**: Other file types are ignored (user is notified if only unsupported files are attached)
 
 **Example Usage:**
 ```
 @Gronk summarize the attached PDF
-@Gronk what are the main points in this DOCX?
-@Gronk extract all TODOs from the attached .txt file
+@Gronk what are the main points in this document?
+@Gronk extract all TODOs from the attached code file
+@Gronk analyze this CSV data
 ```
 
 **Supported file types:**
 - PDF (.pdf)
-- Word Document (.docx)
 - Plain Text (.txt)
+- Markdown (.md)
+- CSV (.csv)
+- JSON (.json)
+- Code files: .py, .js, .java, .c, .cpp, .h, .ts, .go, .rs, .rb, .php
 
 **How it works:**
 - The bot detects supported document attachments
-- Files are uploaded to Grok's files API
-- The file references are included in the Grok chat completion request
-- The bot responds with answers based on the document content
+- Files are uploaded to xAI via the official SDK (gRPC-based for proper file handling)
+- The file references are included in the Grok chat using the SDK's `file()` helper
+- Grok analyzes the document content and responds
+- Files are automatically cleaned up after analysis
 
 The bot now uses state-of-the-art NLP for deeper understanding of queries:
 
@@ -188,7 +198,7 @@ Output will show extracted entities, topics, and intent.
   GROK_VISION_INPUT_COST=2.00
   GROK_VISION_OUTPUT_COST=10.00
   GROK_IMAGE_OUTPUT_COST=0.50
-  GROK_SEARCH_COST=25.00
+  GROK_TOOL_COST=5.00
    ```
    
    **Configuration Options:**
@@ -197,11 +207,13 @@ Output will show extracted entities, topics, and intent.
   - **GROK_IMAGE_MODEL**: Model used for image generation (default: grok-2-image-1212)
    - **TIMEZONE**: Timezone for message timestamps (default: America/Chicago)
    - **ENABLE_WEB_SEARCH**: Enable/disable live web search (default: true)
+   - **ENABLE_X_SEARCH**: Enable X/Twitter search (default: false)
+   - **ENABLE_CODE_EXECUTION**: Enable Python code execution (default: false)
    - **MAX_SEARCH_RESULTS**: Number of web sources to fetch, 1-10 (default: 3, higher = more cost)
    - **MAX_KEYWORD_SCAN**: Maximum messages to scan for keyword searches (default: 10,000)
    - **MAX_MESSAGES_ANALYZED**: Maximum messages sent to Grok for analysis (default: 500, higher = better analysis but more cost)
    - **ENABLE_NL_HISTORY_SEARCH**: Enable natural language history detection (default: true)
-  - **Pricing variables**: Cost per 1M tokens (text/vision input/output, cached), per image, and per 1K search sources
+  - **Pricing variables**: Cost per 1M tokens (text/vision input/output, cached), per image, and per 1K tool invocations
 
 ### 5. Install and Run
 
@@ -235,19 +247,24 @@ This ensures all NLP features work out of the box in containers.
 ## Usage
 
 
-### Image Generation (NEW!)
+### Image Generation
 
-You can generate AI images directly in Discord using the `!imagine` command:
+Gronk can generate AI images directly in Discord using natural language:
 
-**Usage:**
+**Examples:**
 ```
-!imagine <your prompt here>
+@Gronk generate an image of a futuristic city skyline at sunset
+@Gronk draw me a picture of a cat wearing a space helmet
+@Gronk create an image of a serene mountain landscape
 ```
 
-**Example:**
-```
-!imagine a futuristic city skyline at sunset, vibrant colors, ultra detailed
-```
+**Trigger Phrases:**
+- "generate an image of..."
+- "draw a picture of..."
+- "create an image..."
+- "show me an image of..."
+- "visualize..."
+- "illustrate..."
 
 - The bot will reply with an AI-generated image based on your prompt.
 - Click "Generate More Versions" to get 4 new variations of your prompt (costs scale per image).
@@ -267,7 +284,7 @@ You can generate AI images directly in Discord using the `!imagine` command:
 - **Upload images**: Attach images or paste image URLs for visual analysis
 - **Reply chains**: Gronk sees full conversation context in reply threads
 
-### Natural Language History Analysis (NEW! 🧠)
+### Natural Language History Analysis 🧠
 
 Simply mention Gronk and ask questions about your Discord history naturally:
 
@@ -284,7 +301,7 @@ Simply mention Gronk and ask questions about your Discord history naturally:
 - 🔍 **Hybrid Classification**: Uses keyword patterns + Grok AI classification for ambiguous queries
 - ⏱️ **Time Recognition**: Recognizes temporal phrases like "past month", "last week", "recently"
 - 🏷️ **Topic Extraction**: Detects keywords like "about Python", "regarding AI", etc. for filtering
-- 📊 **Same Power**: Uses the same analysis engine as `!search` with citations and timestamps
+- 📊 **Powerful Analysis**: Full citation support with clickable message links
 - 🚀 **Efficient Scanning**: Automatically scans only `MAX_MESSAGES_ANALYZED` for general queries (fast!)
 
 **What triggers Discord search:**
@@ -301,26 +318,17 @@ Simply mention Gronk and ask questions about your Discord history naturally:
 
 **Configuration:**
 - Set `ENABLE_NL_HISTORY_SEARCH=false` in `.env` to disable this feature
-- Fallback to explicit `!search` command if disabled
 
-### Search Command
+### Advanced History Search
 
-**`!search [options] <query>`** - Explicit search command for advanced control
+For more advanced searches, you can include additional context in your natural language queries:
 
-**Basic Usage:**
+**Examples:**
 ```
-!search what did people say about AI?              # Search all users
-!search @john what are his thoughts on Python?     # Search specific user
+@Gronk @john what has he said about Python?        # Search specific user
+@Gronk what did people say about AI in here?      # Search all users
+@Gronk summarize our discussions about bots       # Topic-focused search
 ```
-
-**Advanced Options:**
-```
-!search @user 5000 query                           # Specify message limit (used with keywords)
-!search keyword:Python summarize Python discussions # Pre-filter by keyword (scans more history)
-!search @user keyword:bot 2000 what about bots?    # Combine user, keyword, and limit
-```
-
-**Note:** Without a keyword filter, the bot automatically limits scanning to `MAX_MESSAGES_ANALYZED` for efficiency, since that's all it can send to Grok anyway. Use keyword filters to search deeper history.
 
 **Features:**
 - 🔗 **Inline Citations**: Grok cites specific messages as `[#5]` which become clickable links
@@ -331,7 +339,7 @@ Simply mention Gronk and ask questions about your Discord history naturally:
 - 🕐 **Smart Timestamps**: All timestamps converted to your configured timezone
 
 **Search Behavior:**
-- **General search (no keyword)**: Scans only up to `MAX_MESSAGES_ANALYZED` (default: 500-1000)
+- **General search**: Scans up to `MAX_MESSAGES_ANALYZED` (default: 500-1000)
   - Fast and efficient since we only scan what can be analyzed
   - Perfect for recent history analysis
 - **Keyword search**: Scans up to `MAX_KEYWORD_SCAN` (default: 10,000) to find matching messages
@@ -350,24 +358,40 @@ Simply mention Gronk and ask questions about your Discord history naturally:
 - **Response splitting**: Automatic splitting for long responses with citation preservation
 
 ### Cost Information
+
+**Token-Based Pricing:**
 - **Grok-4-fast**: $0.20/1M input tokens, $0.50/1M output tokens
 - **Grok-2-vision**: $2.00/1M input tokens, $10.00/1M output tokens
-- **Grok-2-image-1212**: $0.50 per image (update as needed)
-- **Web Search**: $25.00 per 1,000 sources (currently limited to 3 sources per search)
 - **Cached tokens**: $0.05/1M (75% discount on repeated context)
 
-> **Note:** Pricing and models are subject to change by xAI. Check [x.ai/api](https://x.ai/api) for current pricing. To update models, edit `GROK_TEXT_MODEL`, `GROK_VISION_MODEL`, and `GROK_IMAGE_MODEL` in your `.env` file. To adjust web search depth, modify `MAX_SEARCH_RESULTS` (higher values increase costs).
+**Tool Invocation Pricing ($5.00 per 1,000 invocations):**
+The following tools are billed per invocation, not per token:
+- **Web Search**: Each web search call counts as one tool invocation
+- **X/Twitter Search**: Each X search call counts as one tool invocation (requires `ENABLE_X_SEARCH=true`)
+- **Code Execution**: Each code execution call counts as one tool invocation (requires `ENABLE_CODE_EXECUTION=true`)
+
+**Image Generation:**
+- **Grok-2-image**: Configurable via `GROK_IMAGE_OUTPUT_COST` (default: $0.07 per image)
+
+> **Note:** Pricing and models are subject to change by xAI. Check [x.ai/api](https://x.ai/api) for current pricing. To update models, edit `GROK_TEXT_MODEL`, `GROK_VISION_MODEL`, and `GROK_IMAGE_MODEL` in your `.env` file.
 
 > **Cost Calculations:** The bot displays estimated costs on each response card based on pricing values configured in your `.env` file. These calculations use the pricing rates shown above by default. If xAI changes their pricing, simply update the `GROK_*_COST` variables in your `.env` file to reflect the new rates.
 
 ## Architecture
 
 - **Models**: Grok-4-fast (text), Grok-2-vision-1212 (images)
+- **xAI SDK Integration**: Uses official xAI SDK with `store_messages=True` for server-side conversation memory
+  - xAI stores conversation history on their servers
+  - Each response includes a `response_id` that chains to the next request via `previous_response_id`
+  - Enables Grok to remember context without resending full history
+  - Response IDs stored in SQLite alongside local conversation history
 - **Web Search**: Live Search API with auto mode (3 sources max by default)
+- **X/Twitter Search**: Real-time social search via xAI's `x_search` tool (optional)
+- **Code Execution**: Python sandbox via xAI's `code_execution` tool (optional)
 - **Natural Language Detection**: 3-tier hybrid system (keywords → pattern scoring → Grok classification)
 - **Message Search**: Optimized scanning with progress tracking, citation linking, and timezone conversion
 - **Memory (Memory Bank)**: SQLite persistent storage with thread-aware context
-  - Stores every user query and bot response (conversation history) as a memory bank
+  - Stores every user query, bot response, and xAI response ID for conversation chaining
   - Used for follow-up questions, context-aware responses, and persistent memory
   - Traverses full reply chains (up to 10 messages deep) to build complete thread context
   - Automatic cleanup of conversations older than 24 hours (configurable)
@@ -401,11 +425,11 @@ Simply mention Gronk and ask questions about your Discord history naturally:
 - **Bot doesn't search Discord when I want it to**:
   - Add Discord indicators: "here", "in this channel", "what have WE discussed"
   - Mention a user: `@Gronk @john what did he say?`
-  - Use explicit `!search` command for full control
+  - Be explicit: "search this channel for..."
   
 - **Disable natural language detection**:
   - Set `ENABLE_NL_HISTORY_SEARCH=false` in `.env`
-  - All history searches will require explicit `!search` command
+  - History searches will be treated as general queries
 
 ### Testing
 Run the test script to verify natural language detection:
