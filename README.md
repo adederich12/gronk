@@ -8,7 +8,7 @@ A Discord bot that integrates with xAI's Grok API to answer questions, with adva
 
 ## Features
 
-- 🤖 **AI Responses**: Powered by Grok-4-fast for text and Grok-2-vision for images (using official xAI SDK)
+- 🤖 **AI Responses**: Powered by Grok 4.3 for text, image understanding, and document analysis (using official xAI SDK)
 - 🔎 **Advanced Message Search**: Search and analyze message history with inline citations
   - Search by user or entire channel
   - Keyword filtering for targeted searches
@@ -21,7 +21,7 @@ A Discord bot that integrates with xAI's Grok API to answer questions, with adva
   - Automatically detects when to search Discord vs. general questions
 - 🖼️ **Image Analysis**: Upload images or paste image URLs for vision analysis
 - 📄 **Document Analysis**: Upload PDFs, TXT, code files for Grok-powered answers (using xAI SDK file upload)
-- 🔍 **Live Web Search**: Real-time web searches with native SDK search parameters and citations
+- 🔍 **Live Web Search**: Real-time web searches with xAI SDK agent tools and citations
 - 🐦 **X/Twitter Search** (Optional): Search X/Twitter for real-time social context
 - 💻 **Code Execution** (Optional): Let Grok run Python code for calculations and data analysis
 - 💬 **Conversation Memory (Memory Bank)**: Persistent SQLite storage remembers full conversation threads and acts as a memory bank
@@ -175,9 +175,10 @@ Output will show extracted entities, topics, and intent.
 3. **(Optional)** Customize model, search, timezone, and pricing settings:
    ```
    # Model Configuration (Optional - defaults shown)
-  GROK_TEXT_MODEL=grok-4-fast
-  GROK_VISION_MODEL=grok-2-vision-1212
-  GROK_IMAGE_MODEL=grok-2-image-1212
+  GROK_TEXT_MODEL=grok-4.3
+  GROK_VISION_MODEL=grok-4.3
+  GROK_IMAGE_MODEL=grok-imagine-image-quality
+  GROK_DOCUMENT_MODEL=grok-4.3
    
    # Timezone Configuration (Optional - defaults to America/Chicago)
    # Use IANA timezone names: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
@@ -186,33 +187,42 @@ Output will show extracted entities, topics, and intent.
    
    # Search Configuration (Optional - defaults shown)
    ENABLE_WEB_SEARCH=true
-   MAX_SEARCH_RESULTS=3
+   ENABLE_X_SEARCH=false
+   ENABLE_CODE_EXECUTION=false
+   ENABLE_PROMPT_CACHE_HINTS=true
+   GROK_REASONING_EFFORT=low
+   GROK_ANALYSIS_REASONING_EFFORT=high
    MAX_KEYWORD_SCAN=10000
    MAX_MESSAGES_ANALYZED=500
    ENABLE_NL_HISTORY_SEARCH=true
+   PERSONA_STORE_PATH=data/personas.json
    
-  # Pricing Configuration (Optional - defaults based on current xAI pricing)
-  GROK_TEXT_INPUT_COST=0.20
-  GROK_TEXT_OUTPUT_COST=0.50
-  GROK_TEXT_CACHED_COST=0.05
-  GROK_VISION_INPUT_COST=2.00
-  GROK_VISION_OUTPUT_COST=10.00
-  GROK_IMAGE_OUTPUT_COST=0.50
+  # Pricing Configuration (Optional - defaults based on current xAI Grok 4.3 pricing)
+  GROK_TEXT_INPUT_COST=1.25
+  GROK_TEXT_OUTPUT_COST=2.50
+  GROK_TEXT_CACHED_COST=0.20
+  GROK_VISION_INPUT_COST=1.25
+  GROK_VISION_OUTPUT_COST=2.50
+  GROK_IMAGE_OUTPUT_COST=0.05
   GROK_TOOL_COST=5.00
    ```
    
    **Configuration Options:**
-   - **GROK_TEXT_MODEL**: Model used for text-only responses (default: grok-4-fast)
-  - **GROK_VISION_MODEL**: Model used when analyzing images (default: grok-2-vision-1212)
-  - **GROK_IMAGE_MODEL**: Model used for image generation (default: grok-2-image-1212)
+   - **GROK_TEXT_MODEL**: Model used for text-only responses (default: grok-4.3)
+  - **GROK_VISION_MODEL**: Model used when analyzing images (default: grok-4.3)
+  - **GROK_DOCUMENT_MODEL**: Model used when analyzing uploaded documents (default: grok-4.3)
+  - **GROK_IMAGE_MODEL**: Model used for image generation (default: grok-imagine-image-quality)
    - **TIMEZONE**: Timezone for message timestamps (default: America/Chicago)
    - **ENABLE_WEB_SEARCH**: Enable/disable live web search (default: true)
    - **ENABLE_X_SEARCH**: Enable X/Twitter search (default: false)
    - **ENABLE_CODE_EXECUTION**: Enable Python code execution (default: false)
-   - **MAX_SEARCH_RESULTS**: Number of web sources to fetch, 1-10 (default: 3, higher = more cost)
+   - **ENABLE_PROMPT_CACHE_HINTS**: Send stable conversation/cache IDs to improve prompt cache hits (default: true)
+   - **GROK_REASONING_EFFORT**: Reasoning effort for normal chat, one of `none`, `low`, `medium`, `high` (default: low)
+   - **GROK_ANALYSIS_REASONING_EFFORT**: Reasoning effort for document, image, and Discord history analysis (default: high)
    - **MAX_KEYWORD_SCAN**: Maximum messages to scan for keyword searches (default: 10,000)
    - **MAX_MESSAGES_ANALYZED**: Maximum messages sent to Grok for analysis (default: 500, higher = better analysis but more cost)
    - **ENABLE_NL_HISTORY_SEARCH**: Enable natural language history detection (default: true)
+   - **PERSONA_STORE_PATH**: JSON file for generated personas and active channel selections (default: data/personas.json)
   - **Pricing variables**: Cost per 1M tokens (text/vision input/output, cached), per image, and per 1K tool invocations
 
 ### 5. Install and Run
@@ -270,11 +280,36 @@ Gronk can generate AI images directly in Discord using natural language:
 - Click "Generate More Versions" to get 4 new variations of your prompt (costs scale per image).
 - To adjust or iterate, reply to the image embed with a new prompt or additional details—the bot will combine your new text with the original prompt for the next generation.
 
-**Cost:** Each generated image is billed at the rate set in your `.env` (`GROK_IMAGE_OUTPUT_COST`, default: $0.50 per image). Generating more versions multiplies the cost (e.g., 4 images = $2.00).
+**Cost:** Each generated image is billed at the rate set in your `.env` (`GROK_IMAGE_OUTPUT_COST`, default: $0.05 per 1K image). Generating more versions multiplies the cost (e.g., 4 images = $0.20).
 
-**Supported Models:** Uses the model set in `GROK_IMAGE_MODEL` (default: `grok-2-image-1212`).
+**Supported Models:** Uses the model set in `GROK_IMAGE_MODEL` (default: `grok-imagine-image-quality`).
 
 **Note:** Image generation requires an xAI API key with image generation enabled. See the [Cost Information](#cost-information) section for details.
+
+---
+
+### Personas
+
+Gronk can ask Grok to create reusable assistant personas, save them locally, and let you select the active persona for each Discord channel.
+
+**Examples:**
+```
+@Gronk create a persona for a concise senior Python reviewer
+@Gronk generate a personality that explains NAS issues like a patient sysadmin
+@Gronk refine current persona to be less sarcastic and more concise
+@Gronk clone default persona as Patient Grok
+@Gronk list personas
+@Gronk select persona
+@Gronk clear persona
+```
+
+- New personas are saved to `PERSONA_STORE_PATH` and selected for the current channel immediately.
+- Refine/edit requests update the selected persona and keep a short local edit history.
+- Persona generation and refinement embeds include an estimated Grok token cost in the footer.
+- The built-in `default` persona is protected. Refining it automatically creates and edits a clone instead.
+- Clone requests copy the active persona by default, or `default` / a persona ID if specified.
+- Listing/selecting personas shows a Discord dropdown with the saved choices.
+- The active persona is channel-scoped, so one channel can use a code-reviewer persona while another keeps the default Grok style.
 
 ---
 
@@ -284,37 +319,27 @@ Gronk can generate AI images directly in Discord using natural language:
 - **Upload images**: Attach images or paste image URLs for visual analysis
 - **Reply chains**: Gronk sees full conversation context in reply threads
 
-### Natural Language History Analysis 🧠
+### Natural Language History Analysis
 
-Simply mention Gronk and ask questions about your Discord history naturally:
+Gronk can answer questions about recent Discord history when the prompt clearly asks about this server/channel/chat.
 
-```
-@Gronk who talks about Python the most in the past month?
-@Gronk what have we discussed about AI recently?
-@Gronk summarize our conversations from last week
-@Gronk @john what are his opinions on crypto?
-@Gronk who mentions gaming the most here?
-```
-
-**How it works:**
-- 🎯 **Smart Detection**: Automatically determines if you're asking about Discord history or general questions
-- 🔍 **Hybrid Classification**: Uses keyword patterns + Grok AI classification for ambiguous queries
-- ⏱️ **Time Recognition**: Recognizes temporal phrases like "past month", "last week", "recently"
-- 🏷️ **Topic Extraction**: Detects keywords like "about Python", "regarding AI", etc. for filtering
-- 📊 **Powerful Analysis**: Full citation support with clickable message links
-- 🚀 **Efficient Scanning**: Automatically scans only `MAX_MESSAGES_ANALYZED` for general queries (fast!)
+- **Conservative Routing**: Uses explicit Discord/history cues so normal questions do not accidentally scan chat history
+- **Time Recognition**: Recognizes temporal phrases like "past month", "last week", "recently"
+- **Topic Extraction**: Detects topics like "about Python" or "regarding AI" for filtering
+- **Cited Analysis**: Includes clickable message links for cited Discord messages
+- **Efficient Scanning**: Automatically scans only `MAX_MESSAGES_ANALYZED` for broad history queries
 
 **What triggers Discord search:**
-- ✅ Mentioning a user: `@Gronk @john what did he say?`
-- ✅ Discord scope words: "here", "in this channel", "this server"
-- ✅ Discord pronouns: "we", "us", "our"
-- ✅ Time + analysis patterns: "who talked about X recently?"
-- ✅ Activity verbs: "who posted about X?"
+- Discord scope plus history/action wording: "who mentioned crypto in this channel?"
+- Discord pronouns plus discussion/history wording: "what have we discussed about AI recently?"
+- User mentions plus message/activity wording: "@john what has he said about Python?"
+- Explicit summaries/rankings of server/channel activity
 
 **What stays as general queries:**
-- ❌ General knowledge: `@Gronk who invented Python?`
-- ❌ World context: `@Gronk what's happening in the news?`
-- ❌ No Discord indicators: `@Gronk explain quantum computing`
+- User mentions without history wording: `@Gronk @john what are his opinions?`
+- General knowledge: `@Gronk who invented Python?`
+- World/news context: `@Gronk summarize news from last week`
+- No Discord history indicators: `@Gronk explain quantum computing`
 
 **Configuration:**
 - Set `ENABLE_NL_HISTORY_SEARCH=false` in `.env` to disable this feature
@@ -360,35 +385,55 @@ For more advanced searches, you can include additional context in your natural l
 ### Cost Information
 
 **Token-Based Pricing:**
-- **Grok-4-fast**: $0.20/1M input tokens, $0.50/1M output tokens
-- **Grok-2-vision**: $2.00/1M input tokens, $10.00/1M output tokens
-- **Cached tokens**: $0.05/1M (75% discount on repeated context)
+- **Grok 4.3**: $1.25/1M input tokens, $2.50/1M output tokens
+- **Grok 4.3 cached input tokens**: $0.20/1M
+- **Higher context pricing**: xAI applies different rates to requests that exceed the 200K context window
 
-**Tool Invocation Pricing ($5.00 per 1,000 invocations):**
-The following tools are billed per invocation, not per token:
-- **Web Search**: Each web search call counts as one tool invocation
-- **X/Twitter Search**: Each X search call counts as one tool invocation (requires `ENABLE_X_SEARCH=true`)
-- **Code Execution**: Each code execution call counts as one tool invocation (requires `ENABLE_CODE_EXECUTION=true`)
+**Server-Side Tool Pricing:**
+Tool-enabled requests are billed as Grok 4.3 token usage plus tool invocations. The agent decides how many tools to call, so search-heavy questions can cost more.
+- **Web Search (`web_search`)**: $5.00 per 1,000 calls
+- **X/Twitter Search (`x_search`)**: $5.00 per 1,000 calls (requires `ENABLE_X_SEARCH=true`)
+- **Code Execution (`code_execution`)**: $5.00 per 1,000 calls (requires `ENABLE_CODE_EXECUTION=true`)
+- **File attachment search (`attachment_search`)**: $10.00 per 1,000 calls, if xAI invokes attachment search for uploaded files
+- **Image understanding during Web/X Search (`view_image`)**: token-based, not a separate tool invocation fee
 
 **Image Generation:**
-- **Grok-2-image**: Configurable via `GROK_IMAGE_OUTPUT_COST` (default: $0.07 per image)
+- **Grok Imagine image generation**: Configurable via `GROK_IMAGE_OUTPUT_COST` (default: $0.05 per 1K image; 2K is currently $0.07)
 
-> **Note:** Pricing and models are subject to change by xAI. Check [x.ai/api](https://x.ai/api) for current pricing. To update models, edit `GROK_TEXT_MODEL`, `GROK_VISION_MODEL`, and `GROK_IMAGE_MODEL` in your `.env` file.
+> **Note:** Pricing and models are subject to change by xAI. Check [x.ai/api](https://x.ai/api) for current pricing. To update models, edit `GROK_TEXT_MODEL`, `GROK_VISION_MODEL`, `GROK_DOCUMENT_MODEL`, and `GROK_IMAGE_MODEL` in your `.env` file.
 
-> **Cost Calculations:** The bot displays estimated costs on each response card based on pricing values configured in your `.env` file. These calculations use the pricing rates shown above by default. If xAI changes their pricing, simply update the `GROK_*_COST` variables in your `.env` file to reflect the new rates.
+> **Cost Calculations:** The bot displays estimated costs on each response card based on pricing values configured in your `.env` file. Web/X/code tool calls use `GROK_TOOL_COST=5.00` per 1,000 invocations. If xAI changes pricing, update the `GROK_*_COST` variables in your `.env` file.
 
 ## Architecture
 
-- **Models**: Grok-4-fast (text), Grok-2-vision-1212 (images)
+- **Models**: Grok 4.3 for text, image understanding, and document analysis; image generation remains configured separately with `GROK_IMAGE_MODEL`
+- **Code Layout**:
+  - `main.py`: Discord bot wiring, message routing, and response orchestration
+  - `config.py`: environment loading and runtime configuration
+  - `grok_client.py`: OpenAI-compatible xAI client and SDK chat helper
+  - `grok_responder.py`: Grok request routing, response embeds, cost display, and conversation storage
+  - `image_generation.py`: image generation and revision flow
+  - `persona_manager.py`: persona generation, JSON persistence, and Discord selection UI
+  - `discord_history.py`: Discord-history intent detection, scanning, and analysis
+  - `document_utils.py`: document upload and xAI file cleanup helpers
+  - `media_utils.py`: image/document attachment and embed media collection
+  - `reply_context.py`: reply-chain context gathering for follow-up questions
+  - `conversation_store.py`: SQLite conversation memory helpers
+  - `nlp_utils.py`: spaCy loading, intent patterns, and NLP parsing
+  - `discord_utils.py`: Discord-specific formatting helpers
 - **xAI SDK Integration**: Uses official xAI SDK with `store_messages=True` for server-side conversation memory
   - xAI stores conversation history on their servers
   - Each response includes a `response_id` that chains to the next request via `previous_response_id`
   - Enables Grok to remember context without resending full history
   - Response IDs stored in SQLite alongside local conversation history
-- **Web Search**: Live Search API with auto mode (3 sources max by default)
+  - Stable conversation IDs are sent when `ENABLE_PROMPT_CACHE_HINTS=true` to improve prompt cache reuse
+  - Structured output schemas are used for bot answers, document answers, and Discord history citations
+  - Grok 4.3 reasoning effort is configurable separately for normal chat and heavier analysis
+- **Web Search**: xAI SDK agent web search tool, enabled by default
 - **X/Twitter Search**: Real-time social search via xAI's `x_search` tool (optional)
 - **Code Execution**: Python sandbox via xAI's `code_execution` tool (optional)
-- **Natural Language Detection**: 3-tier hybrid system (keywords → pattern scoring → Grok classification)
+- **Personas**: Grok-generated reusable system prompts with per-channel selection stored in `PERSONA_STORE_PATH`
+- **Natural Language Detection**: Conservative rule-based routing for Discord history queries
 - **Message Search**: Optimized scanning with progress tracking, citation linking, and timezone conversion
 - **Memory (Memory Bank)**: SQLite persistent storage with thread-aware context
   - Stores every user query, bot response, and xAI response ID for conversation chaining
@@ -402,14 +447,14 @@ The following tools are billed per invocation, not per token:
 - **Context**: Reply chain traversal + time-aware message history (2-minute window)
 - **Citation System**: Selective citations (3-6 per response) with individual message linking `[#N]` (no ranges)
 - **Timezone**: pytz-based timezone conversion with automatic DST handling
-- **Query Routing**: 90% instant keyword detection, 10% Grok-assisted classification for ambiguous cases
+- **Query Routing**: Conservative local rule-based detection for Discord history queries
 
 ## Troubleshooting
 
 ### General Issues
 - **Bot doesn't respond**: Check that Message Content Intent is enabled in Discord Developer Portal
 - **Image errors**: Only JPEG, PNG, and WebP formats are supported
-- **High costs**: Reduce `MAX_SEARCH_RESULTS` or disable `ENABLE_WEB_SEARCH` in `.env`
+- **High costs**: Reduce `MAX_MESSAGES_ANALYZED`, lower search/history limits, or disable `ENABLE_WEB_SEARCH` in `.env`
 - **Slow keyword searches**: Reduce `MAX_KEYWORD_SCAN` in `.env` (default: 10,000)
 - **Wrong timestamps**: Set correct `TIMEZONE` in `.env` using IANA timezone names
 - **Citations not linking**: Ensure messages are in the analyzed set (limited by `MAX_MESSAGES_ANALYZED`)
