@@ -5,3 +5,4 @@ pytz
 spacy==3.8.14
 aiohttp
 xai-sdk
+click>=8.0.0
