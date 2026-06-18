@@ -77,6 +77,19 @@ async def on_message(message):
 
     # Check if bot is mentioned OR if user is replying to bot's message
     is_bot_mentioned = bot.user in message.mentions
+
+    # Also catch role mentions (e.g. @Gronk via a role)
+    if not is_bot_mentioned and message.role_mentions:
+        try:
+            bot_member = message.guild.get_member(bot.user.id)
+            if bot_member:
+                bot_role_ids = {role.id for role in bot_member.roles}
+                if any(role.id in bot_role_ids for role in message.role_mentions):
+                    is_bot_mentioned = True
+                    logger.info('[MSG] Bot detected via role mention')
+        except Exception as e:
+            logger.warning(f'[MSG] Error checking role mentions: {e}')
+
     is_replying_to_bot = False
     replied_msg = None
     previous_xai_response_id = None
