@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import aiohttp
@@ -28,7 +29,8 @@ def _extract_prompt_from_embed(interaction: Interaction):
     return embed.description.split("**Prompt:**", 1)[1].strip()
 
 
-async def _request_generated_images(prompt: str, count: int = 1):
+async def _request_single_image(prompt: str, session: aiohttp.ClientSession):
+    """Request a single image from the Grok API. Returns URL or None on failure."""
     headers = {
         "Authorization": f"Bearer {XAI_KEY}",
         "Content-Type": "application/json",
@@ -38,33 +40,47 @@ async def _request_generated_images(prompt: str, count: int = 1):
         "prompt": prompt,
         "response_format": "url",
     }
-    if count > 1:
-        payload["n"] = count
 
-    async with aiohttp.ClientSession() as session:
+    try:
         async with session.post(IMAGE_API_URL, headers=headers, json=payload) as resp:
             body = await resp.text()
             if resp.status not in (200, 201):
-                logger.error(f'Grok image API error {resp.status}: {body}')
-                raise RuntimeError(f"Grok image API error: {resp.status} {body[:500]}")
+                logger.warning(f'Grok image API error {resp.status}: {body}')
+                return None
 
             try:
                 data = await resp.json()
             except Exception as exc:
-                logger.error(f'Grok image API returned non-JSON body: {body}')
-                raise RuntimeError("Grok image API returned an invalid response") from exc
+                logger.warning(f'Grok image API returned non-JSON body: {body[:200]}')
+                return None
 
-    image_urls = []
-    if isinstance(data, dict) and isinstance(data.get('data'), list):
-        image_urls = [
-            img.get('url')
-            for img in data['data']
-            if isinstance(img, dict) and img.get('url')
-        ]
+        if isinstance(data, dict) and isinstance(data.get('data'), list):
+            for img in data['data']:
+                if isinstance(img, dict) and img.get('url'):
+                    return img['url']
+
+        logger.warning(f'No image URL in response: {data}')
+        return None
+
+    except Exception as e:
+        logger.warning(f'Exception during image request: {e}')
+        return None
+
+
+async def _request_generated_images(prompt: str, count: int = 1):
+    """
+    Request `count` images concurrently, each as an individual API call.
+    Returns a list of URLs for whichever requests succeeded.
+    Raises RuntimeError if no images could be generated at all.
+    """
+    async with aiohttp.ClientSession() as session:
+        tasks = [_request_single_image(prompt, session) for _ in range(count)]
+        results = await asyncio.gather(*tasks)
+
+    image_urls = [url for url in results if url is not None]
 
     if not image_urls:
-        logger.error(f'No image URLs returned by Grok image API: {data}')
-        raise RuntimeError("No image URLs returned by Grok")
+        raise RuntimeError("All image generation attempts failed — no images returned by Grok")
 
     return image_urls
 
@@ -86,14 +102,20 @@ class MoreVersionsView(ui.View):
                 return
 
             image_urls = await _request_generated_images(prompt, count=4)
+            failed_count = 4 - len(image_urls)
+
             embeds = []
             bot_url = "https://astrixbot.cf"
 
             for idx, image_url in enumerate(image_urls):
                 if idx == 0:
+                    title = f"Grok AI Generated Images ({len(image_urls)} Version{'s' if len(image_urls) != 1 else ''})"
+                    description = f"**Prompt:** {prompt}"
+                    if failed_count > 0:
+                        description += f"\n⚠️ {failed_count} of 4 generation{'s' if failed_count != 1 else ''} failed and were skipped."
                     embed = discord.Embed(
-                        title="Grok AI Generated Images (4 Versions)",
-                        description=f"**Prompt:** {prompt}",
+                        title=title,
+                        description=description,
                         color=discord.Color.purple(),
                         timestamp=interaction.message.created_at if interaction.message else None,
                     )
@@ -109,6 +131,7 @@ class MoreVersionsView(ui.View):
                 embeds.append(embed)
 
             await interaction.followup.send(embeds=embeds, view=MoreVersionsView(), ephemeral=False)
+
         except Exception as e:
             logger.error(f'Error generating more image versions: {e}', exc_info=True)
             await interaction.followup.send(f"Error generating image versions: {e}", ephemeral=True)
