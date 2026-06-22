@@ -54,7 +54,6 @@ data/*
 # Test files
 test_*.py
 .env2
-.env
 .dockerignore
 build-and-export.ps1
 build-and-export.sh
@@ -69,7 +68,6 @@ SYNOLOGY_GUI_SETUP.md
 SYNOLOGY_IMPORT_GUIDE.md
 SYNOLOGY_SETUP.md
 .github/workflows/deploy-gcp.yml
-discloud.config
 discloud.config
 grok_response_debug.json
 embed_debug_output.txt

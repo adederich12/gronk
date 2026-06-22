@@ -52,9 +52,7 @@ All dependencies are listed in `requirements.txt`:
 - `aiohttp` - Async HTTP client for image generation API
 - `python-dotenv` - Environment variable management
 - `pytz` - Timezone handling for accurate timestamps
-- `spacy` - Advanced NLP for entity and topic extraction
-- `torch` - Required for transformer-based intent classification
-- `transformers` - Hugging Face zero-shot intent classification
+- `spacy` - NLP for entity and topic extraction
 
 ### Optional
 - **Docker** - For containerized deployment (includes all NLP dependencies and spaCy model)
@@ -94,13 +92,13 @@ You can now upload documents as Discord attachments when mentioning the bot or r
 - Grok analyzes the document content and responds
 - Files are automatically cleaned up after analysis
 
-The bot now uses state-of-the-art NLP for deeper understanding of queries:
+The bot uses lightweight NLP for deeper understanding of queries:
 
 - 🏷️ **Entity Extraction**: Uses spaCy to extract people, dates, organizations, and topics from queries
 - 🧠 **Topic Detection**: Identifies key topics and noun phrases for more accurate search and filtering
-- 🎯 **Intent Classification**: Uses Hugging Face transformers (zero-shot) to classify query intent (e.g., Discord history, general knowledge, user search, topic summary)
+- 🎯 **Intent Classification**: Uses regex pattern matching to classify query intent (image generation, Discord history, general query) — see `nlp_utils.py`
 - 🔬 **Multi-word & Contextual Keywords**: Supports complex queries like "What did @john say about crypto between January and March?"
-- 🌐 **Multilingual Ready**: spaCy and transformers can be extended for other languages
+- 🌐 **Multilingual Ready**: spaCy can be extended for other languages
 
 **Example Queries:**
 ```
@@ -112,13 +110,6 @@ What topics did @role members talk about last Friday?
 Who is the most famous AI researcher in the world?
 Summarize news from last week.
 ```
-
-**Testing Advanced NLP:**
-Run the test script to see entity, topic, and intent extraction:
-```powershell
-python test_advanced_nlp.py "Who talked about AI and crypto in the last year?"
-```
-Output will show extracted entities, topics, and intent.
 
 ## Setup
 
@@ -231,19 +222,13 @@ Output will show extracted entities, topics, and intent.
   ```powershell
   pip install -r requirements.txt
   ```
-  This will install all required NLP libraries (spaCy, torch, transformers). The first run will download the spaCy English model automatically.
+  This will install all required NLP libraries (spaCy). The first run will download the spaCy English model automatically.
 
 2. Run the bot:
   ```powershell
   python main.py
   ```
   The bot will be online in your Discord server.
-
-3. (Optional) Test advanced NLP extraction:
-  ```powershell
-  python test_advanced_nlp.py "Who talked about AI and crypto in the last year?"
-  ```
-  This will print extracted entities, topics, and intent for your query.
 
 ### Docker Support
 
@@ -475,9 +460,3 @@ Tool-enabled requests are billed as Grok 4.3 token usage plus tool invocations. 
 - **Disable natural language detection**:
   - Set `ENABLE_NL_HISTORY_SEARCH=false` in `.env`
   - History searches will be treated as general queries
-
-### Testing
-Run the test script to verify natural language detection:
-```powershell
-python test_nl_detection.py
-```

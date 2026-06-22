@@ -112,7 +112,7 @@ def _usage_text(completion):
     return f"{cost_str} • {completion.usage.prompt_tokens} in / {completion.usage.completion_tokens} out"
 
 
-def _extract_answer_and_sources(response, using_sdk_path):
+def _extract_answer_and_sources(response):
     json_response = response.strip()
     json_match = re.match(r'^```(?:json)?\s*\n?([\s\S]*?)\n?```$', json_response, re.DOTALL)
     if json_match:
@@ -200,7 +200,6 @@ async def handle_grok_query(message, bot, prompt, image_urls, document_attachmen
             )
 
             current_xai_response_id = None
-            using_sdk_path = False
             conversation_id = build_cache_conversation_id(message.channel.id, message.author.id)
             active_persona = get_active_persona(message.channel.id)
             if active_persona:
@@ -258,7 +257,6 @@ async def handle_grok_query(message, bot, prompt, image_urls, document_attachmen
                 )
                 await delete_grok_files(xai_client, grok_file_ids)
             else:
-                using_sdk_path = True
                 sdk_system_prompt = _apply_persona(sdk_system_prompt, active_persona)
                 if previous_xai_response_id:
                     logger.info(f'Continuing conversation with xAI response ID: {previous_xai_response_id} (not sending local history - using server-side memory)')
@@ -284,7 +282,7 @@ async def handle_grok_query(message, bot, prompt, image_urls, document_attachmen
 
             usage_text = _usage_text(completion)
             try:
-                answer, sources = _extract_answer_and_sources(response, using_sdk_path)
+                answer, sources = _extract_answer_and_sources(response)
             except Exception as e:
                 logger.error(f'Failed to parse Grok JSON: {e}\nRaw response: {response}')
                 await message.reply("❌ Grok did not return valid JSON. Please try again.")

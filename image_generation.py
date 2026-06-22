@@ -87,7 +87,7 @@ class MoreVersionsView(ui.View):
 
             image_urls = await _request_generated_images(prompt, count=4)
             embeds = []
-            bot_url = "https://astrixbot.cf"
+            bot_url = "https://github.com/adederich12/gronk"
 
             for idx, image_url in enumerate(image_urls):
                 if idx == 0:

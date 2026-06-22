@@ -408,13 +408,11 @@ async def perform_discord_history_search(message, query, time_limit=None, keywor
             )
 
             # --- Begin JSON extraction and parsing ---
-            import json as _json
-            import re as _re
-            json_match = _re.search(r'\{[\s\S]*\}$', response)
+            json_match = re.search(r'\{[\s\S]*\}$', response)
             if json_match:
                 json_str = json_match.group(0)
                 try:
-                    data = _json.loads(json_str)
+                    data = json.loads(json_str)
                     answer = data.get("answer", "")
                     sources = data.get("sources", {})
                 except Exception as e:
@@ -641,5 +639,5 @@ async def perform_discord_history_search(message, query, time_limit=None, keywor
         logger.error(f'Error in Discord history search: {e}', exc_info=True)
         try:
             await searching_msg.edit(content=f"❌ Error analyzing messages: {str(e)}")
-        except:
+        except Exception:
             await message.reply(f"❌ Error analyzing messages: {str(e)}")

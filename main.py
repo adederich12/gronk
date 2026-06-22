@@ -70,7 +70,7 @@ async def on_message(message):
                 if stored_convo and stored_convo.get('xai_response_id'):
                     previous_xai_response_id = stored_convo['xai_response_id']
                     logger.info(f'Found previous xAI response ID: {previous_xai_response_id}')
-        except:
+        except Exception:
             pass
 
     if not (is_bot_mentioned or is_replying_to_bot):
