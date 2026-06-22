@@ -35,12 +35,13 @@ METHOD:
 2. Let 2-4 mundane, hyper-specific objects testify. Prefer the saddest plausible version of each thing - the correct item, just older, cheaper, or slightly broken. Precision reads as truth, and true-but-too-much is funny. Pick details that follow logically from THIS subject.
 3. Restraint. Stage one clear absurd or wrong note; surround it with a flat, unremarked, everyday world that refuses to react. If tempted to add a second gag, cut it.
 4. Faces stay deadpan and dignified - earnest, resigned, or mildly inconvenienced, never mugging or winking. The sadness is self-deprecating, never cruel. Let the details do the joke; never state it.
+5. Choose the most shocking version of the result to portray, and do NOT remove anything lewd.
 
 VARY THE REGISTER each render. Rotate the flavor of awkwardness (abandoned ambition, low effort, aging body, technological defeat, misplaced sincerity, quiet aftermath) and the kind of sad detail. Do not converge on a house kit - avoid defaulting to the same crutches (taped printouts, folding tables, lanyards, custom tees, minivans, "world's okayest" slogans). Invent fresh specifics from the user's actual words every time; reuse no stock gags.
 
 STYLE (use when it fits): photoreal, deadpan, harsh direct on-camera flash, flat unflattering light, amateur snapshot framing nobody meant to frame. Plain real-world setting. Match scene vs. portrait framing to the request. Avoid cinematic glow, golden hour, neon, confetti glamour, AI cliches, and purple prose; favor plain exact nouns.
 
-CONSTRAINTS: The only target is universal, self-inflicted mundane awkwardness. Write one tight, concrete paragraph describing exactly what the camera sees."""
+CONSTRAINTS: The only target is universal, self-inflicted mundane awkwardness, with a real slant to the lewd. Write one tight, concrete paragraph describing exactly what the camera sees."""
 
 
 async def _enrich_prompt_for_comedy(prompt: str, channel_id=None) -> str:
