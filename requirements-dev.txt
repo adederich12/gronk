@@ -1,0 +1,13 @@
+# Development / test dependencies (runtime deps live in requirements.txt).
+#
+# The synthetic test harness under tests/ fakes the external services
+# (xai-sdk, openai, spacy) so no API keys or network are needed. It uses the
+# REAL discord.py and pydantic so embed validation and schema parsing are
+# exercised for real.
+pytest
+pytest-asyncio
+discord.py
+pydantic>=2
+pytz
+python-dotenv
+aiohttp

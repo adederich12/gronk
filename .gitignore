@@ -51,8 +51,12 @@ Thumbs.db
 data/*
 !data/.gitkeep
 
-# Test files
+# Test files (legacy local scratch scripts)
 test_*.py
+
+# ...but keep the committed synthetic test harness under tests/
+!tests/**/*.py
+.pytest_cache/
 .env2
 .dockerignore
 build-and-export.ps1

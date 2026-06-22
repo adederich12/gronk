@@ -4,6 +4,7 @@ import re
 
 import discord
 from xai_sdk.chat import file as xai_file
+from xai_sdk.chat import image as xai_image
 from xai_sdk.chat import system as xai_system
 from xai_sdk.chat import user as xai_user
 
@@ -25,12 +26,11 @@ from conversation_store import store_conversation
 from document_utils import delete_grok_files, upload_documents_to_grok
 from grok_client import (
     build_cache_conversation_id,
-    client,
-    normalize_openai_reasoning_effort,
+    get_xai_client,
     normalize_sdk_reasoning_effort,
     sdk_chat_request,
 )
-from grok_schemas import GrokAnswer, json_schema_response_format
+from grok_schemas import GrokAnswer
 from persona_manager import get_active_persona
 
 
@@ -73,12 +73,10 @@ class MockCompletion:
         self.choices = [MockChoice(MockMessage(content))]
 
 
-def _usage_text(completion):
+def _usage_text(completion, is_vision=False):
     if not hasattr(completion, 'usage') or not completion.usage:
         return ""
 
-    model_used = completion.model
-    is_vision = 'vision' in model_used.lower()
     vision_cost = 0
     if is_vision:
         input_cost = (completion.usage.prompt_tokens / 1_000_000) * GROK_VISION_INPUT_COST
@@ -206,20 +204,33 @@ async def handle_grok_query(message, bot, prompt, image_urls, document_attachmen
                 logger.info(f"Using active persona for channel {message.channel.id}: {active_persona['name']}")
 
             if image_urls:
-                openai_system_prompt = _apply_persona(openai_system_prompt, active_persona)
-                content = [{"type": "text", "text": prompt or "What's in this image?"}]
-                for url in image_urls:
-                    content.append({"type": "image_url", "image_url": {"url": url}})
-                logger.info('Sending request to Grok with images...')
-                completion = client.chat.completions.create(
+                vision_system_prompt = _apply_persona(openai_system_prompt, active_persona)
+                logger.info(f'Sending request to Grok with {len(image_urls)} image(s) via xAI SDK')
+                vision_client = get_xai_client()
+                chat = vision_client.chat.create(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": openai_system_prompt},
-                        {"role": "user", "content": content}
-                    ],
-                    response_format=json_schema_response_format(GrokAnswer, "grok_answer"),
-                    reasoning_effort=normalize_openai_reasoning_effort(GROK_ANALYSIS_REASONING_EFFORT),
-                    extra_headers={"x-grok-conv-id": conversation_id} if conversation_id else None,
+                    messages=[xai_system(vision_system_prompt)],
+                    response_format=GrokAnswer,
+                    reasoning_effort=normalize_sdk_reasoning_effort(GROK_ANALYSIS_REASONING_EFFORT),
+                    conversation_id=conversation_id,
+                    store_messages=True,
+                )
+                chat.append(xai_user(
+                    prompt or "What's in this image?",
+                    *[xai_image(image_url=url, detail="high") for url in image_urls],
+                ))
+                sdk_response, parsed_response = await chat.parse(GrokAnswer)
+                if sdk_response and hasattr(sdk_response, 'id'):
+                    current_xai_response_id = sdk_response.id
+                    logger.info(f'Vision analysis response ID: {current_xai_response_id}')
+                completion = MockCompletion(
+                    parsed_response.model_dump_json() if hasattr(parsed_response, 'model_dump_json') else parsed_response.json(),
+                    model,
+                    SdkMockUsage({
+                        'prompt_tokens': getattr(sdk_response.usage, 'prompt_tokens', 0),
+                        'completion_tokens': getattr(sdk_response.usage, 'completion_tokens', 0),
+                        'total_tokens': getattr(sdk_response.usage, 'total_tokens', 0),
+                    }) if sdk_response and hasattr(sdk_response, 'usage') and sdk_response.usage else None
                 )
             elif grok_file_ids:
                 doc_system_prompt = (
@@ -280,7 +291,7 @@ async def handle_grok_query(message, bot, prompt, image_urls, document_attachmen
             response = completion.choices[0].message.content
             logger.info(f'Received response from Grok ({len(response)} characters)')
 
-            usage_text = _usage_text(completion)
+            usage_text = _usage_text(completion, is_vision=bool(image_urls))
             try:
                 answer, sources = _extract_answer_and_sources(response)
             except Exception as e:

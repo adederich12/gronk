@@ -460,3 +460,23 @@ Tool-enabled requests are billed as Grok 4.3 token usage plus tool invocations. 
 - **Disable natural language detection**:
   - Set `ENABLE_NL_HISTORY_SEARCH=false` in `.env`
   - History searches will be treated as general queries
+
+## Development & Testing
+
+The `tests/` directory contains a synthetic harness that drives the real
+request pipeline (routing, embed building, schema parsing) while faking the
+external services. It needs **no API keys and makes no network calls** — the
+xAI SDK, OpenAI client, and spaCy are replaced with lightweight fakes, while
+the real `discord.py` and `pydantic` are used so embeds and schemas are
+exercised for real.
+
+```sh
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests live under `tests/`; the fakes for external services are in
+`tests/fakes/`. Add a `*_test.py` (or `tests/test_*.py`) file to cover a new
+path through the bot.
