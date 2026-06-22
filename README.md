@@ -213,6 +213,7 @@ Summarize news from last week.
    - **MAX_KEYWORD_SCAN**: Maximum messages to scan for keyword searches (default: 10,000)
    - **MAX_MESSAGES_ANALYZED**: Maximum messages sent to Grok for analysis (default: 500, higher = better analysis but more cost)
    - **ENABLE_NL_HISTORY_SEARCH**: Enable natural language history detection (default: true)
+  - **ENABLE_COMEDY_DIRECTOR**: Rewrite image prompts to be funnier before generation (default: true). The editable system prompt lives in `image_generation.py` as `COMEDY_DIRECTOR_SYSTEM_PROMPT`; it falls back to the raw prompt on any error.
    - **PERSONA_STORE_PATH**: JSON file for generated personas and active channel selections (default: data/personas.json)
   - **Pricing variables**: Cost per 1M tokens (text/vision input/output, cached), per image, and per 1K tool invocations
 

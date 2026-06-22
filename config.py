@@ -46,6 +46,7 @@ ENABLE_WEB_SEARCH = os.getenv('ENABLE_WEB_SEARCH', 'true').lower() == 'true'
 ENABLE_X_SEARCH = os.getenv('ENABLE_X_SEARCH', 'false').lower() == 'true'
 ENABLE_CODE_EXECUTION = os.getenv('ENABLE_CODE_EXECUTION', 'false').lower() == 'true'
 ENABLE_NL_HISTORY_SEARCH = os.getenv('ENABLE_NL_HISTORY_SEARCH', 'true').lower() == 'true'
+ENABLE_COMEDY_DIRECTOR = os.getenv('ENABLE_COMEDY_DIRECTOR', 'true').lower() == 'true'
 ENABLE_PROMPT_CACHE_HINTS = os.getenv('ENABLE_PROMPT_CACHE_HINTS', 'true').lower() == 'true'
 
 GROK_REASONING_EFFORT = os.getenv('GROK_REASONING_EFFORT', 'low').lower()

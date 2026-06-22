@@ -4,13 +4,71 @@ import aiohttp
 import discord
 from discord import Interaction, ui
 
-from config import GROK_IMAGE_MODEL, GROK_IMAGE_OUTPUT_COST, XAI_KEY
+from config import (
+    ENABLE_COMEDY_DIRECTOR,
+    GROK_IMAGE_MODEL,
+    GROK_IMAGE_OUTPUT_COST,
+    GROK_REASONING_EFFORT,
+    GROK_TEXT_MODEL,
+    XAI_KEY,
+)
+from grok_client import build_cache_conversation_id, sdk_chat_request
 
 
 logger = logging.getLogger('GrokBot')
 
 IMAGE_API_URL = "https://api.x.ai/v1/images/generations"
 MORE_VERSIONS_CUSTOM_ID = "more_versions"
+
+# --- Comedy art director -------------------------------------------------------
+# Editable system prompt that rewrites a user's image request into a funnier,
+# enriched image-generation prompt before it is sent to the image model.
+# Tune this freely; see the design knobs noted where the bot was set up.
+COMEDY_DIRECTOR_SYSTEM_PROMPT = """You are a comedy art director. Rewrite the user's image request into ONE enriched image-generation prompt string. Output only that prompt. No preamble, no commentary, no quotes.
+
+Your comedic engine is RECOGNITION, not randomness. The win is "oh god, that's us" - the quiet indignity of ordinary life, played completely straight. Never go wacky, surreal, or "lol so random." Recognizable-sad beats zany every time.
+
+PRESERVE INTENT. Keep the user's exact subject, action, and people. You decorate; you never hijack or swap what they asked for. The image must still read as their request.
+
+METHOD:
+1. Find the core subject. Cast every figure and prop as if it carries a small, quietly tragic backstory: a posture, an expression, or one thing slightly wrong, dated, or trying too hard. Imply a life, not a joke.
+2. Let 2-4 mundane, hyper-specific objects testify. Prefer the saddest plausible version of each thing - the correct item, just older, cheaper, or slightly broken. Precision reads as truth, and true-but-too-much is funny. Pick details that follow logically from THIS subject.
+3. Restraint. Stage one clear absurd or wrong note; surround it with a flat, unremarked, everyday world that refuses to react. If tempted to add a second gag, cut it.
+4. Faces stay deadpan and dignified - earnest, resigned, or mildly inconvenienced, never mugging or winking. The sadness is self-deprecating, never cruel. Let the details do the joke; never state it.
+
+VARY THE REGISTER each render. Rotate the flavor of awkwardness (abandoned ambition, low effort, aging body, technological defeat, misplaced sincerity, quiet aftermath) and the kind of sad detail. Do not converge on a house kit - avoid defaulting to the same crutches (taped printouts, folding tables, lanyards, custom tees, minivans, "world's okayest" slogans). Invent fresh specifics from the user's actual words every time; reuse no stock gags.
+
+STYLE (use when it fits): photoreal, deadpan, harsh direct on-camera flash, flat unflattering light, amateur snapshot framing nobody meant to frame. Plain real-world setting. Match scene vs. portrait framing to the request. Avoid cinematic glow, golden hour, neon, confetti glamour, AI cliches, and purple prose; favor plain exact nouns.
+
+CONSTRAINTS: The only target is universal, self-inflicted mundane awkwardness. Write one tight, concrete paragraph describing exactly what the camera sees."""
+
+
+async def _enrich_prompt_for_comedy(prompt: str, channel_id=None) -> str:
+    """Rewrite a user image prompt into a funnier one via Grok.
+
+    Always degrades gracefully: any failure, timeout, or empty result falls back
+    to the original prompt so image generation is never blocked by this step.
+    """
+    if not ENABLE_COMEDY_DIRECTOR or not prompt or not prompt.strip():
+        return prompt
+
+    try:
+        enriched, _usage, _citations, _response_id = await sdk_chat_request(
+            model=GROK_TEXT_MODEL,
+            system_prompt=COMEDY_DIRECTOR_SYSTEM_PROMPT,
+            user_prompt=prompt,
+            include_search=False,
+            reasoning_effort=GROK_REASONING_EFFORT,
+            conversation_id=build_cache_conversation_id('comedy', channel_id) if channel_id else None,
+        )
+        enriched = (enriched or "").strip()
+        if enriched:
+            logger.info(f'Comedy director enriched image prompt ({len(prompt)} -> {len(enriched)} chars)')
+            return enriched
+        logger.warning('Comedy director returned empty output; using original prompt')
+    except Exception as e:
+        logger.warning(f'Comedy director enrichment failed, using original prompt: {e}')
+    return prompt
 
 
 def _avatar_url(user):
@@ -85,7 +143,8 @@ class MoreVersionsView(ui.View):
                 )
                 return
 
-            image_urls = await _request_generated_images(prompt, count=4)
+            enriched_prompt = await _enrich_prompt_for_comedy(prompt, channel_id=interaction.channel_id)
+            image_urls = await _request_generated_images(enriched_prompt, count=4)
             embeds = []
             bot_url = "https://github.com/adederich12/gronk"
 
@@ -125,7 +184,8 @@ async def generate_image(message, prompt: str):
             return
 
         async with message.channel.typing():
-            image_url = (await _request_generated_images(prompt, count=1))[0]
+            enriched_prompt = await _enrich_prompt_for_comedy(prompt, channel_id=message.channel.id)
+            image_url = (await _request_generated_images(enriched_prompt, count=1))[0]
 
         usage_text = f"${GROK_IMAGE_OUTPUT_COST:.2f} (est.)"
         embed = discord.Embed(
